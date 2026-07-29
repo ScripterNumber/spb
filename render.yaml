@@ -14,3 +14,7 @@ services:
         sync: false
       - key: GUILD_ID
         sync: false
+      - key: ROBLOX_API_KEY
+        sync: false
+      - key: ROBLOX_UNIVERSE_ID
+        sync: false

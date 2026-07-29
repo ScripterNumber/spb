@@ -24,12 +24,16 @@ const MUTE_ALIASES = ['mute', 'мьют', 'мут', 'таймаут'];
 const UNMUTE_ALIASES = ['unmute', 'размьют', 'размут'];
 const LOOPCLEAR_ALIASES = ['loopclear', 'лупклир'];
 const STOPLOOPCLEAR_ALIASES = ['stoploopclear', 'стоплупклир'];
+const SPVKBAN_ALIASES = ['spvkban', 'спвкбан'];
+const SPVKUNBAN_ALIASES = ['spvkunban', 'спвкразбан'];
 
 const ALL_NAMES = [
   ...MUTE_ALIASES,
   ...UNMUTE_ALIASES,
   ...LOOPCLEAR_ALIASES,
   ...STOPLOOPCLEAR_ALIASES,
+  ...SPVKBAN_ALIASES,
+  ...SPVKUNBAN_ALIASES,
 ];
 
 function mutedOnly(b) {
@@ -107,11 +111,35 @@ function buildStopLoopClearCommand(name) {
   );
 }
 
+function buildSpvkBanCommand(name) {
+  return mutedOnly(
+    new SlashCommandBuilder()
+      .setName(name)
+      .setDescription('Забанить игрока в Roblox по нику через Open Cloud'),
+  )
+    .addStringOption((o) => o.setName('юзернеймроблокса').setDescription('Ник игрока в Roblox').setRequired(true))
+    .addIntegerOption((o) => o.setName('часы').setDescription('Время в часах (0 = перманентный бан)').setRequired(true).setMinValue(0))
+    .addStringOption((o) => o.setName('причина').setDescription('Причина бана').setRequired(true))
+    .addBooleanOption((o) =>
+      o.setName('твинки').setDescription('Банить и твинков (альт-аккаунты)?').setRequired(false),
+    );
+}
+
+function buildSpvkUnbanCommand(name) {
+  return mutedOnly(
+    new SlashCommandBuilder()
+      .setName(name)
+      .setDescription('Разбанить игрока в Roblox по нику через Open Cloud'),
+  ).addStringOption((o) => o.setName('юзернеймроблокса').setDescription('Ник игрока в Roblox').setRequired(true));
+}
+
 const commandData = [
   ...MUTE_ALIASES.map(buildMuteCommand),
   ...UNMUTE_ALIASES.map(buildUnmuteCommand),
   ...LOOPCLEAR_ALIASES.map(buildLoopClearCommand),
   ...STOPLOOPCLEAR_ALIASES.map(buildStopLoopClearCommand),
+  ...SPVKBAN_ALIASES.map(buildSpvkBanCommand),
+  ...SPVKUNBAN_ALIASES.map(buildSpvkUnbanCommand),
 ].map((c) => c.toJSON());
 
 module.exports = {
@@ -120,6 +148,8 @@ module.exports = {
   UNMUTE_ALIASES,
   LOOPCLEAR_ALIASES,
   STOPLOOPCLEAR_ALIASES,
+  SPVKBAN_ALIASES,
+  SPVKUNBAN_ALIASES,
   ALL_NAMES,
   commandData,
 };

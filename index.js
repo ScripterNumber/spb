@@ -18,10 +18,13 @@ const {
   UNMUTE_ALIASES,
   LOOPCLEAR_ALIASES,
   STOPLOOPCLEAR_ALIASES,
+  SPVKBAN_ALIASES,
+  SPVKUNBAN_ALIASES,
   commandData,
 } = require('./commands');
 const { startKeepAlive } = require('./keepalive');
 const loopclear = require('./loopclear');
+const roblox = require('./roblox');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -119,6 +122,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (UNMUTE_ALIASES.includes(name)) return handleUnmute(interaction);
     if (LOOPCLEAR_ALIASES.includes(name)) return handleLoopClear(interaction);
     if (STOPLOOPCLEAR_ALIASES.includes(name)) return handleStopLoopClear(interaction);
+    if (SPVKBAN_ALIASES.includes(name)) return handleSpvkBan(interaction);
+    if (SPVKUNBAN_ALIASES.includes(name)) return handleSpvkUnban(interaction);
   } catch (error) {
     console.error('[interaction] ошибка:', error);
     if (interaction.isRepliable()) {
@@ -395,11 +400,11 @@ async function handleLoopClear(interaction) {
     });
   }
 
-  await interaction.deferReply();
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const loop = loopclear.startLoop({ channel, targetId, count });
   if (!loop) {
-    return interaction.editReply('Не вышло запустить очистку.');
+    return interaction.editReply({ content: 'Не вышло запустить очистку.', flags: MessageFlags.Ephemeral });
   }
 
   const scopeText = targetUser ? `сообщения ${targetUser}` : 'сообщения всех';
@@ -458,6 +463,133 @@ async function handleStopLoopClear(interaction) {
       ? `Остановил лупклир${targetUser ? ` для ${targetUser}` : ''} в этом канале.`
       : 'Не вышло остановить — похоже, он уже финишировал.',
   });
+}
+
+// ─────────────────────────────────────────────────────────────
+// /spvkban (он же /спвкбан) — бан в Roblox через Open Cloud
+// ─────────────────────────────────────────────────────────────
+async function handleSpvkBan(interaction) {
+  if (!interaction.inGuild()) {
+    return interaction.reply({ content: 'Команда работает только на сервере.', flags: MessageFlags.Ephemeral });
+  }
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)) {
+    return interaction.reply({ content: 'Нужно право «Модерировать участников».', flags: MessageFlags.Ephemeral });
+  }
+
+  const username = interaction.options.getString('юзернеймроблокса', true).trim();
+  const hours = interaction.options.getInteger('часы', true);
+  const reason = interaction.options.getString('причина', true).trim();
+  const includeAlts = interaction.options.getBoolean('твинки') === true;
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const res = await roblox.banByUsername(username, hours, reason, includeAlts && false /* по умолчанию альтов баним */);
+
+    if (res.reason === 'not_found') {
+      return interaction.editReply({
+        content: `Игрока **${username}** в Roblox не существует.`,
+      });
+    }
+
+    const displayName = res.lookup?.displayName || res.lookup?.name || username;
+    const userId = res.lookup?.id ?? '?';
+    const durationText = hours > 0 ? `${hours} ч.` : 'навсегда';
+
+    const embed = new EmbedBuilder().setTimestamp();
+
+    if (res.ok) {
+      embed
+        .setColor(0x2ecc71)
+        .setTitle('Бан выдан')
+        .addFields(
+          { name: 'Игрок', value: `${displayName} (@${res.lookup?.name ?? username})`, inline: true },
+          { name: 'Roblox ID', value: String(userId), inline: true },
+          { name: 'Срок', value: durationText, inline: true },
+          { name: 'Причина', value: reason, inline: false },
+        );
+      if (includeAlts) embed.setFooter({ text: 'Твинки заблокированы вместе с основным' });
+    } else {
+      embed
+        .setColor(0xe74c3c)
+        .setTitle('Не вышло забанить')
+        .setDescription(`Roblox ответил кодом **${res.status}**.`)
+        .addFields(
+          { name: 'Игрок', value: `${displayName} (@${res.lookup?.name ?? username})`, inline: true },
+          { name: 'Roblox ID', value: String(userId), inline: true },
+        );
+      if (res.raw) embed.addFields({ name: 'Ответ Roblox', value: `\`\`\`${truncate(res.raw, 500)}\`\`\`` });
+    }
+
+    return interaction.editReply({ embeds: [embed] });
+  } catch (error) {
+    console.error('[spvkban] ошибка:', error);
+    const msg = error?.code === 'MISSING_ENV'
+      ? error.message
+      : `Roblox API не ответил: ${error?.message ?? 'неизвестная ошибка'}`;
+    return interaction.editReply({ content: msg });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// /spvkunban (он же /спвкразбан)
+// ─────────────────────────────────────────────────────────────
+async function handleSpvkUnban(interaction) {
+  if (!interaction.inGuild()) {
+    return interaction.reply({ content: 'Команда работает только на сервере.', flags: MessageFlags.Ephemeral });
+  }
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)) {
+    return interaction.reply({ content: 'Нужно право «Модерировать участников».', flags: MessageFlags.Ephemeral });
+  }
+
+  const username = interaction.options.getString('юзернеймроблокса', true).trim();
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const res = await roblox.unbanByUsername(username);
+
+    if (res.reason === 'not_found') {
+      return interaction.editReply({ content: `Игрока **${username}** в Roblox не существует.` });
+    }
+
+    const displayName = res.lookup?.displayName || res.lookup?.name || username;
+    const userId = res.lookup?.id ?? '?';
+
+    const embed = new EmbedBuilder().setTimestamp();
+
+    if (res.ok) {
+      embed
+        .setColor(0x2ecc71)
+        .setTitle('Игрок разбанен')
+        .addFields(
+          { name: 'Игрок', value: `${displayName} (@${res.lookup?.name ?? username})`, inline: true },
+          { name: 'Roblox ID', value: String(userId), inline: true },
+        );
+    } else {
+      embed
+        .setColor(0xe74c3c)
+        .setTitle('Разбан не прошёл')
+        .setDescription(`Roblox ответил кодом **${res.status}**.`)
+        .addFields(
+          { name: 'Игрок', value: `${displayName} (@${res.lookup?.name ?? username})`, inline: true },
+          { name: 'Roblox ID', value: String(userId), inline: true },
+        );
+      if (res.raw) embed.addFields({ name: 'Ответ Roblox', value: `\`\`\`${truncate(res.raw, 500)}\`\`\`` });
+    }
+
+    return interaction.editReply({ embeds: [embed] });
+  } catch (error) {
+    console.error('[spvkunban] ошибка:', error);
+    const msg = error?.code === 'MISSING_ENV'
+      ? error.message
+      : `Roblox API не ответил: ${error?.message ?? 'неизвестная ошибка'}`;
+    return interaction.editReply({ content: msg });
+  }
+}
+
+function truncate(str, n) {
+  return str.length > n ? `${str.slice(0, n - 1)}…` : str;
 }
 
 // ─────────────────────────────────────────────────────────────

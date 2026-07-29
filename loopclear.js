@@ -146,7 +146,7 @@ function startLoop({ channel, targetId = null, count = null }) {
     }
   })().finally(() => {
     loops.delete(channel.id);
-    onTick({ done: true, deleted: loop.deleted });
+    loop.onTick?.({ done: true, deleted: loop.deleted });
     console.log(`[loopclear] финиш #${channel.name}: удалено ${loop.deleted}`);
   });
 
