@@ -149,7 +149,12 @@ async function handleMute(interaction) {
 
   const guild = interaction.guild;
 
-  const target = await guild.members.fetch(user.id).catch(() => null);
+  // force: true — спрашиваем у API напрямую, минуя кэш.
+  // Иначе бот может работать на устаревших ролях после того, как их подвигали.
+  const target =
+    (await guild.members.fetch({ user: user.id, force: true }).catch(() => null)) ??
+    guild.members.cache.get(user.id) ??
+    null;
   if (!target) {
     return interaction.reply({ content: 'Не нашёл этого участника на сервере.', ephemeral: true });
   }
@@ -159,6 +164,12 @@ async function handleMute(interaction) {
   if (target.id === interaction.client.user.id) {
     return interaction.reply({ content: 'Меня мутить бесполезно — я бот, тайм-аут мне не выдаётся.', ephemeral: true });
   }
+  if (target.user.bot) {
+    return interaction.reply({
+      content: 'Других ботов Discord мутить запрещает в принципе (даже с админкой будет Missing Access). Кикнуть или забанить — пожалуйста, а тайм-аут — только живым людям.',
+      ephemeral: true,
+    });
+  }
   if (target.id === guild.ownerId) {
     return interaction.reply({
       content: 'Владельца сервера замутить нельзя — это жёсткое правило Discord, его не обходит даже Administrator.',
@@ -166,9 +177,8 @@ async function handleMute(interaction) {
     });
   }
 
-  // Свежие данные о своей роли: из кэша, а если пусто — напрямую из API.
-  // Так бот не зависит от устаревшего кэша после того, как роли подвигали.
-  const me = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+  // Свежие данные о своей роли — тоже напрямую из API, кэшу не доверяем.
+  const me = (await guild.members.fetchMe({ force: true }).catch(() => null)) ?? guild.members.me;
   if (!me) {
     return interaction.reply({
       content: 'Не вижу свою роль. Перезапусти бота (Manual Deploy → Deploy на Render) и попробуй снова.',
@@ -231,10 +241,15 @@ async function handleMute(interaction) {
   try {
     await target.timeout(ms, `${reason} — выдал ${interaction.user.tag}`);
   } catch (error) {
-    console.error('[mute] Discord API отклонил тайм-аут:', error);
+    console.error(
+      `[mute] Discord API отклонил тайм-аут: code=${error?.code} message=${error?.message} ` +
+        `(я: «${myTop.name}»${myTop.position}, цель: «${targetTop.name}»${targetTop.position}, bot=${target.user.bot}, owner=${target.id === guild.ownerId})`,
+    );
     return interaction.reply({
-      content:
-        'Discord отклонил мут (Missing Access). Проверь: у роли бота есть «Модерировать участников», и она стоит выше ролей участника в Настройки сервера → Роли.',
+      content: [
+        `Discord отклонил мут (код ${error?.code ?? 'неизвестно'}: ${error?.message ?? 'ошибка API'}).`,
+        'Мои проверки до этого прошли — значит, проблема на стороне Discord. Пришли строку с кодом из логов Render, разберёмся.',
+      ].join('\n'),
       ephemeral: true,
     });
   }
