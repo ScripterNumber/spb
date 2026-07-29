@@ -8,10 +8,20 @@ const {
   Routes,
   EmbedBuilder,
   PermissionFlagsBits,
+  MessageFlags,
+  GuildMFALevel,
 } = require('discord.js');
 
-const { UNITS, MUTE_ALIASES, commandData } = require('./commands');
+const {
+  UNITS,
+  MUTE_ALIASES,
+  UNMUTE_ALIASES,
+  LOOPCLEAR_ALIASES,
+  STOPLOOPCLEAR_ALIASES,
+  commandData,
+} = require('./commands');
 const { startKeepAlive } = require('./keepalive');
+const loopclear = require('./loopclear');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -103,13 +113,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     if (!interaction.isChatInputCommand()) return;
-    if (!MUTE_ALIASES.includes(interaction.commandName)) return;
 
-    await handleMute(interaction);
+    const name = interaction.commandName;
+    if (MUTE_ALIASES.includes(name)) return handleMute(interaction);
+    if (UNMUTE_ALIASES.includes(name)) return handleUnmute(interaction);
+    if (LOOPCLEAR_ALIASES.includes(name)) return handleLoopClear(interaction);
+    if (STOPLOOPCLEAR_ALIASES.includes(name)) return handleStopLoopClear(interaction);
   } catch (error) {
     console.error('[interaction] ошибка:', error);
     if (interaction.isRepliable()) {
-      const payload = { content: 'Что-то пошло не так. Попробуй ещё раз.', ephemeral: true };
+      const payload = { content: 'Что-то пошло не так. Попробуй ещё раз.', flags: MessageFlags.Ephemeral };
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp(payload).catch(() => {});
       } else {
@@ -124,13 +137,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // ─────────────────────────────────────────────────────────────
 async function handleMute(interaction) {
   if (!interaction.inGuild()) {
-    return interaction.reply({ content: 'Команда работает только на сервере.', ephemeral: true });
+    return interaction.reply({ content: 'Команда работает только на сервере.', flags: MessageFlags.Ephemeral });
   }
 
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)) {
     return interaction.reply({
       content: 'Нужно право «Модерировать участников» — без него мутить нельзя.',
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -143,7 +156,7 @@ async function handleMute(interaction) {
   if (!unitInfo) {
     return interaction.reply({
       content: 'Выбери единицу из подсказок: секунды, минуты, часы или дни.',
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -156,24 +169,24 @@ async function handleMute(interaction) {
     guild.members.cache.get(user.id) ??
     null;
   if (!target) {
-    return interaction.reply({ content: 'Не нашёл этого участника на сервере.', ephemeral: true });
+    return interaction.reply({ content: 'Не нашёл этого участника на сервере.', flags: MessageFlags.Ephemeral });
   }
   if (target.id === interaction.user.id) {
-    return interaction.reply({ content: 'Сам себя мутить? Забавно, но нет.', ephemeral: true });
+    return interaction.reply({ content: 'Сам себя мутить? Забавно, но нет.', flags: MessageFlags.Ephemeral });
   }
   if (target.id === interaction.client.user.id) {
-    return interaction.reply({ content: 'Меня мутить бесполезно — я бот, тайм-аут мне не выдаётся.', ephemeral: true });
+    return interaction.reply({ content: 'Меня мутить бесполезно — я бот, тайм-аут мне не выдаётся.', flags: MessageFlags.Ephemeral });
   }
   if (target.user.bot) {
     return interaction.reply({
       content: 'Других ботов Discord мутить запрещает в принципе (даже с админкой будет Missing Access). Кикнуть или забанить — пожалуйста, а тайм-аут — только живым людям.',
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
   if (target.id === guild.ownerId) {
     return interaction.reply({
       content: 'Владельца сервера замутить нельзя — это жёсткое правило Discord, его не обходит даже Administrator.',
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -182,7 +195,7 @@ async function handleMute(interaction) {
   if (!me) {
     return interaction.reply({
       content: 'Не вижу свою роль. Перезапусти бота (Manual Deploy → Deploy на Render) и попробуй снова.',
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -190,7 +203,7 @@ async function handleMute(interaction) {
   if (!me.permissions.has(PermissionFlagsBits.ModerateMembers)) {
     return interaction.reply({
       content: 'У моей роли нет права «Модерировать участников». Выдай его (или Administrator): Настройки сервера → Роли.',
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -212,7 +225,7 @@ async function handleMute(interaction) {
         'Перетащи мою роль выше его роли: Настройки сервера → Роли.',
         'Смотри именно на список РОЛЕЙ — в списке участников боты всегда висят наверху группой, но на иерархию это никак не влияет.',
       ].join('\n'),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -222,7 +235,7 @@ async function handleMute(interaction) {
     if (invokerTop.comparePositionTo(targetTop) <= 0) {
       return interaction.reply({
         content: `Твоя высшая роль (**${invokerTop.name}**) не выше роли участника (**${targetTop.name}**) — через бота мутить вышестоящих нельзя.`,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
   }
@@ -243,14 +256,31 @@ async function handleMute(interaction) {
   } catch (error) {
     console.error(
       `[mute] Discord API отклонил тайм-аут: code=${error?.code} message=${error?.message} ` +
-        `(я: «${myTop.name}»${myTop.position}, цель: «${targetTop.name}»${targetTop.position}, bot=${target.user.bot}, owner=${target.id === guild.ownerId})`,
+        `(я: «${myTop.name}»${myTop.position}, цель: «${targetTop.name}»${targetTop.position}, bot=${target.user.bot}, owner=${target.id === guild.ownerId}, mfa=${guild.mfaLevel})`,
     );
+
+    // Классика: на сервере включено «Требовать 2FA для действий модерации».
+    // Тогда Discord считает, что прав у бота НЕТ, пока у владельца бота не включена 2FA.
+    if (error?.code === 50013 && guild.mfaLevel === GuildMFALevel.Elevated) {
+      return interaction.reply({
+        content: [
+          'Причина найдена: на сервере включено **«Требовать 2FA для действий модерации»**.',
+          'Discord считает, что у бота нет прав, пока у **владельца бота** не включена двухфакторная аутентификация — админка и иерархия ролей здесь не помогают.',
+          '',
+          'Что сделать (на выбор):',
+          '• включи 2FA: Настройки пользователя → Моя учётная запись → «Включить двухфакторную аутентификацию» — рекомендуется;',
+          '• или выключи требование: Настройки сервера → Настройки безопасности → «Требовать 2FA для действий модерации».',
+        ].join('\n'),
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
     return interaction.reply({
       content: [
         `Discord отклонил мут (код ${error?.code ?? 'неизвестно'}: ${error?.message ?? 'ошибка API'}).`,
         'Мои проверки до этого прошли — значит, проблема на стороне Discord. Пришли строку с кодом из логов Render, разберёмся.',
       ].join('\n'),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -269,6 +299,165 @@ async function handleMute(interaction) {
   }
 
   await interaction.reply({ embeds: [embed] });
+}
+
+// ─────────────────────────────────────────────────────────────
+// /размьют (он же /unmute, /размут)
+// ─────────────────────────────────────────────────────────────
+async function handleUnmute(interaction) {
+  if (!interaction.inGuild()) {
+    return interaction.reply({ content: 'Команда работает только на сервере.', flags: MessageFlags.Ephemeral });
+  }
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)) {
+    return interaction.reply({
+      content: 'Нужно право «Модерировать участников».',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const user = interaction.options.getUser('участник', true);
+  const reason = interaction.options.getString('причина') ?? 'без причины';
+
+  const guild = interaction.guild;
+  const target = await guild.members.fetch(user.id).catch(() => null);
+  if (!target) {
+    return interaction.reply({ content: 'Не нашёл этого участника на сервере.', flags: MessageFlags.Ephemeral });
+  }
+
+  if (!target.isCommunicationDisabled()) {
+    return interaction.reply({ content: `${target} и так не в муте.`, flags: MessageFlags.Ephemeral });
+  }
+
+  const me = (await guild.members.fetchMe().catch(() => null)) ?? guild.members.me;
+  if (me) {
+    const myTop = me.roles.highest;
+    const targetTop = target.roles.highest;
+    if (target.id !== guild.ownerId && myTop.comparePositionTo(targetTop) <= 0) {
+      return interaction.reply({
+        content: `Снять мут не смогу: роль ${target} (**${targetTop.name}**) не ниже моей (**${myTop.name}**). Подними мою роль выше в Настройки сервера → Роли.`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+  }
+
+  try {
+    await target.timeout(null, `Размут: ${reason} — выдал ${interaction.user.tag}`);
+  } catch (error) {
+    console.error(`[unmute] Discord API отклонил: code=${error?.code} message=${error?.message}`);
+    return interaction.reply({
+      content: `Discord отклонил размут (код ${error?.code ?? 'неизвестно'}). Скорее всего, дело в иерархии ролей или требовании 2FA.`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0x2ecc71)
+    .setTitle('Мут снят')
+    .setDescription(`${target} снова может писать и говорить`)
+    .addFields(
+      { name: 'Модератор', value: `${interaction.user}`, inline: true },
+      { name: 'Причина', value: reason, inline: true },
+    )
+    .setTimestamp();
+
+  return interaction.reply({ embeds: [embed] });
+}
+
+// ─────────────────────────────────────────────────────────────
+// /loopclear (он же /лупклир) — гениальная очистка
+// ─────────────────────────────────────────────────────────────
+async function handleLoopClear(interaction) {
+  if (!interaction.inGuild()) {
+    return interaction.reply({ content: 'Команда работает только на сервере.', flags: MessageFlags.Ephemeral });
+  }
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)) {
+    return interaction.reply({ content: 'Нужно право «Модерировать участников».', flags: MessageFlags.Ephemeral });
+  }
+
+  const channel = interaction.channel;
+  if (!channel || !('messages' in channel)) {
+    return interaction.reply({ content: 'Здесь нет сообщений для очистки.', flags: MessageFlags.Ephemeral });
+  }
+
+  const targetUser = interaction.options.getUser('ник'); // может быть null = все
+  const targetId = targetUser?.id ?? null;
+  const count = interaction.options.getInteger('count'); // 1..1000 или null = до конца канала
+
+  // В канале — максимум один лупклир. Запущенный с тем же фильтром качается дальше.
+  if (loopclear.isActive(channel.id)) {
+    const current = loopclear.currentTargetId(channel.id);
+    return interaction.reply({
+      content:
+        current === targetId
+          ? 'Лупклир с такой настройкой уже качается здесь — дождись финиша или останови его через /stoploopclear.'
+          : 'Тут уже идёт очистка (в канале может быть только один лупклир). Останови его: /stoploopclear — и запусти новый.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  await interaction.deferReply();
+
+  const loop = loopclear.startLoop({ channel, targetId, count });
+  if (!loop) {
+    return interaction.editReply('Не вышло запустить очистку.');
+  }
+
+  const scopeText = targetUser ? `сообщения ${targetUser}` : 'сообщения всех';
+  const limitText = count ? `Проходов: **${count}**.` : 'Пойдём до самого первого сообщения канала.';
+  const oldText =
+    'Старые сообщения (14+ дней, их не берёт массовая чистка) выковыриваются **по одному**, принудительно, быстро и по очереди.';
+
+  await interaction.editReply({
+    content: `Запустил лупклир: чищу ${scopeText} в этом канале.\n${limitText} ${oldText}\nОстановить: /stoploopclear${targetUser ? ` ${targetUser.username}` : ''}`,
+  });
+
+  // Тикаем и докладываем по мере прогресса — раз в ~5 секунд обновляем счётчик.
+  let lastEdit = 0;
+  let lastDeleted = -1;
+  loop.onTick = async ({ deleted = loop.deleted, done = false } = {}) => {
+    const now = Date.now();
+    if (!done && (now - lastEdit < 5000 || deleted === lastDeleted)) return;
+    lastEdit = now;
+    lastDeleted = deleted;
+    const line = done
+      ? `Лупклир финишировал: удалено **${deleted}**.`
+      : `Лупклир качается: удалено **${deleted}**…`;
+    interaction.editReply({ content: `${line}\n${limitText} ${oldText}` }).catch(() => {});
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// /stoploopclear (он же /стоплупклир)
+// ─────────────────────────────────────────────────────────────
+async function handleStopLoopClear(interaction) {
+  if (!interaction.inGuild()) {
+    return interaction.reply({ content: 'Команда работает только на сервере.', flags: MessageFlags.Ephemeral });
+  }
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)) {
+    return interaction.reply({ content: 'Нужно право «Модерировать участников».', flags: MessageFlags.Ephemeral });
+  }
+
+  const channel = interaction.channel;
+  const targetUser = interaction.options.getUser('ник'); // null = остановить весь лупклир
+
+  if (!loopclear.isActive(channel.id)) {
+    return interaction.reply({ content: 'В этом канале нет активного лупклира.', flags: MessageFlags.Ephemeral });
+  }
+
+  const current = loopclear.currentTargetId(channel.id);
+  if (targetUser && current && current !== targetUser.id) {
+    return interaction.reply({
+      content: `Сейчас качается лупклир другого фильтра (участник с id ${current}). /stoploopclear без ника остановит его полностью.`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const res = loopclear.stopLoop(channel.id, targetUser?.id ?? null);
+  return interaction.reply({
+    content: res.stopped
+      ? `Остановил лупклир${targetUser ? ` для ${targetUser}` : ''} в этом канале.`
+      : 'Не вышло остановить — похоже, он уже финишировал.',
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
