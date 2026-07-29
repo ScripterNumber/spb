@@ -147,21 +147,74 @@ async function handleMute(interaction) {
     });
   }
 
-  const target = await interaction.guild.members.fetch(user.id).catch(() => null);
+  const guild = interaction.guild;
+
+  const target = await guild.members.fetch(user.id).catch(() => null);
   if (!target) {
     return interaction.reply({ content: 'Не нашёл этого участника на сервере.', ephemeral: true });
   }
   if (target.id === interaction.user.id) {
     return interaction.reply({ content: 'Сам себя мутить? Забавно, но нет.', ephemeral: true });
   }
-  if (target.id === interaction.guild.ownerId) {
-    return interaction.reply({ content: 'Владельца сервера замутить нельзя — таковы правила Discord.', ephemeral: true });
+  if (target.id === interaction.client.user.id) {
+    return interaction.reply({ content: 'Меня мутить бесполезно — я бот, тайм-аут мне не выдаётся.', ephemeral: true });
   }
-  if (!target.moderatable) {
+  if (target.id === guild.ownerId) {
     return interaction.reply({
-      content: 'Не могу замутить: моя роль стоит НИЖЕ роли этого участника. Подними роль бота выше в настройках сервера (Роли).',
+      content: 'Владельца сервера замутить нельзя — это жёсткое правило Discord, его не обходит даже Administrator.',
       ephemeral: true,
     });
+  }
+
+  // Свежие данные о своей роли: из кэша, а если пусто — напрямую из API.
+  // Так бот не зависит от устаревшего кэша после того, как роли подвигали.
+  const me = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+  if (!me) {
+    return interaction.reply({
+      content: 'Не вижу свою роль. Перезапусти бота (Manual Deploy → Deploy на Render) и попробуй снова.',
+      ephemeral: true,
+    });
+  }
+
+  // 1) У роли бота должно быть право на модерацию.
+  if (!me.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+    return interaction.reply({
+      content: 'У моей роли нет права «Модерировать участников». Выдай его (или Administrator): Настройки сервера → Роли.',
+      ephemeral: true,
+    });
+  }
+
+  const myTop = me.roles.highest;
+  const targetTop = target.roles.highest;
+
+  // 2) Иерархия: высшая роль бота должна быть СТРОГО выше высшей роли цели.
+  //    ВАЖНО: Administrator иерархию НЕ пробивает — таковы правила Discord.
+  if (myTop.comparePositionTo(targetTop) <= 0) {
+    console.log(
+      `[mute] отказ по иерархии: «${myTop.name}»(${myTop.position}) <= «${targetTop.name}»(${targetTop.position}), цель=${target.user.tag}`,
+    );
+    return interaction.reply({
+      content: [
+        'Роли стоят не так, как нужно:',
+        `• моя высшая роль: **${myTop.name}** — позиция ${myTop.position}`,
+        `• высшая роль ${target}: **${targetTop.name}** — позиция ${targetTop.position}`,
+        '',
+        'Перетащи мою роль выше его роли: Настройки сервера → Роли.',
+        'Смотри именно на список РОЛЕЙ — в списке участников боты всегда висят наверху группой, но на иерархию это никак не влияет.',
+      ].join('\n'),
+      ephemeral: true,
+    });
+  }
+
+  // 3) Модератор не должен мутить через бота тех, кто выше или равен ему по роли.
+  if (interaction.user.id !== guild.ownerId) {
+    const invokerTop = interaction.member.roles.highest;
+    if (invokerTop.comparePositionTo(targetTop) <= 0) {
+      return interaction.reply({
+        content: `Твоя высшая роль (**${invokerTop.name}**) не выше роли участника (**${targetTop.name}**) — через бота мутить вышестоящих нельзя.`,
+        ephemeral: true,
+      });
+    }
   }
 
   let ms = amount * unitInfo.ms;
@@ -171,7 +224,20 @@ async function handleMute(interaction) {
     capped = true;
   }
 
-  await target.timeout(ms, `${reason} — выдал ${interaction.user.tag}`);
+  console.log(
+    `[mute] ${interaction.user.tag} -> ${target.user.tag} на ${ms}ms (я: «${myTop.name}»${myTop.position}, цель: «${targetTop.name}»${targetTop.position})`,
+  );
+
+  try {
+    await target.timeout(ms, `${reason} — выдал ${interaction.user.tag}`);
+  } catch (error) {
+    console.error('[mute] Discord API отклонил тайм-аут:', error);
+    return interaction.reply({
+      content:
+        'Discord отклонил мут (Missing Access). Проверь: у роли бота есть «Модерировать участников», и она стоит выше ролей участника в Настройки сервера → Роли.',
+      ephemeral: true,
+    });
+  }
 
   const embed = new EmbedBuilder()
     .setColor(0x5865f2)
