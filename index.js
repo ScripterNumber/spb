@@ -31,6 +31,8 @@ const { startKeepAlive } = require('./keepalive');
 const loopclear = require('./loopclear');
 const roblox = require('./roblox');
 const settings = require('./settings');
+const robloxpoller = require('./robloxpoller');
+const settings = require('./settings');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -67,10 +69,14 @@ async function registerCommands() {
   }
 }
 
-client.once(Events.ClientReady, (readyClient) => {
-  console.log(`[bot] вошли как ${readyClient.user.tag}`);
-  registerCommands();
-});
+ client.once(Events.ClientReady, (readyClient) => {
+   console.log(`[bot] вошли как ${readyClient.user.tag}`);
+   registerCommands();
+  robloxpoller.startPoller({
+    client: readyClient,
+    getChannelId: () => settings.getBanLogChannel(GUILD_ID),
+  });
+ });
 
 // ─────────────────────────────────────────────────────────────
 // Хелперы
