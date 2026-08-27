@@ -1,74 +1,34 @@
 // ─────────────────────────────────────────────────────────────
-// SETTINGS — персистентные настройки по серверам
+// SETTINGS
 //
-// Сейчас единственная настройка: канал для логов банов/разбанов в игре
-// (Roblox Open Cloud). Задаётся командой /setgamebanlogschannel,
-// хранится в JSON-файле рядом с ботом (data/settings.json).
+// Render free план сбрасывает файловую систему при каждом деплое,
+// поэтому настройки хранятся в переменных окружения, а не в файле.
 //
-// Важно: на Render free план файловая система эфемерна и обнуляется
-// при новом деплое (autoDeploy/manual redeploy). Между обычными
-// перезапусками процесса (например, после падения) файл сохраняется.
-// Если после деплоя канал логов пропал — просто прогони команду заново.
+// BAN_LOG_CHANNEL_ID — ID канала для логов банов/разбанов в игре.
+// Можно переопределить командой /setgamebanlogschannel прямо в Discord
+// (работает до следующего деплоя, потом снова берётся из env).
 // ─────────────────────────────────────────────────────────────
-const fs = require('fs');
-const path = require('path');
 
-const DATA_DIR = path.join(__dirname, 'data');
-const FILE_PATH = path.join(DATA_DIR, 'settings.json');
-
-let cache = null;
-
-function ensureLoaded() {
-  if (cache) return cache;
-  try {
-    if (fs.existsSync(FILE_PATH)) {
-      const raw = fs.readFileSync(FILE_PATH, 'utf8');
-      cache = raw ? JSON.parse(raw) : {};
-    } else {
-      cache = {};
-    }
-  } catch (error) {
-    console.error('[settings] не смог прочитать settings.json, начинаю с пустого хранилища:', error);
-    cache = {};
-  }
-  return cache;
-}
-
-function persist() {
-  try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(FILE_PATH, JSON.stringify(cache, null, 2), 'utf8');
-  } catch (error) {
-    console.error('[settings] не смог сохранить settings.json:', error);
-  }
-}
-
-function getGuildSettings(guildId) {
-  const data = ensureLoaded();
-  if (!data[guildId]) data[guildId] = {};
-  return data[guildId];
-}
-
-// ── канал логов банов/разбанов в игре ──────────────────────
-
-function setBanLogChannel(guildId, channelId) {
-  const data = ensureLoaded();
-  if (!data[guildId]) data[guildId] = {};
-  data[guildId].banLogChannelId = channelId;
-  persist();
-}
+// runtime-override: живёт только пока процесс жив
+const overrides = new Map(); // guildId -> channelId
 
 function getBanLogChannel(guildId) {
-  if (!guildId) return null;
-  return getGuildSettings(guildId).banLogChannelId ?? null;
+  // Сначала смотрим runtime-override (команда /setgamebanlogschannel)
+  if (guildId && overrides.has(guildId)) {
+    return overrides.get(guildId);
+  }
+  // Потом env-переменная (постоянная, не слетает при деплое)
+  return process.env.BAN_LOG_CHANNEL_ID ?? null;
+}
+
+function setBanLogChannel(guildId, channelId) {
+  overrides.set(guildId, channelId);
+  console.log(`[settings] BAN_LOG_CHANNEL_ID для ${guildId} = ${channelId} (runtime, до след. деплоя)`);
+  console.log(`[settings] чтобы сохранить навсегда — добавь BAN_LOG_CHANNEL_ID=${channelId} в Render → Environment`);
 }
 
 function clearBanLogChannel(guildId) {
-  const data = ensureLoaded();
-  if (data[guildId]) {
-    delete data[guildId].banLogChannelId;
-    persist();
-  }
+  overrides.delete(guildId);
 }
 
 module.exports = {
