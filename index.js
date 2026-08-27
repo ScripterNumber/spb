@@ -30,7 +30,6 @@ const {
 const { startKeepAlive } = require('./keepalive');
 const loopclear = require('./loopclear');
 const roblox = require('./roblox');
-const settings = require('./settings');
 const robloxpoller = require('./robloxpoller');
 const settings = require('./settings');
 
