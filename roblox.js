@@ -11,6 +11,10 @@
 //    3) Permissions: добавить «User Restrictions» → Read & Write
 //    4) Создать и скопировать ключ (больше его не покажут)
 //  Ключ кладём в Render как ROBLOX_API_KEY, universe id — как ROBLOX_UNIVERSE_ID.
+//
+//  Лог банов/разбанов в Discord: канал задаётся командой
+//  /setgamebanlogschannel (хранится в settings.js, per-сервер).
+//  Если канал не задан — announceRestrictionChange() просто ничего не делает.
 // ─────────────────────────────────────────────────────────────
 const USERNAMES_URL = 'https://users.roblox.com/v1/usernames/users';
 const RESTRICTIONS_BASE = 'https://apis.roblox.com/cloud/v2/universes';
@@ -69,11 +73,31 @@ async function patchRestriction({ userId, restriction, apiKey, universeId }) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Лог в Discord-канал: ```diff\n+ Username\n``` при бане,
+// ```diff\n- Username\n``` при разбане. notify = { client, channelId }.
+// channelId может быть null — тогда просто ничего не отправляем
+// (канал логов не настроен командой /setgamebanlogschannel).
+// ─────────────────────────────────────────────────────────────
+async function announceRestrictionChange(notify, username, active) {
+  if (!notify?.client || !notify?.channelId) return;
+  try {
+    const channel = await notify.client.channels.fetch(notify.channelId);
+    if (!channel || !channel.isTextBased()) return;
+    const sign = active ? '+' : '-';
+    await channel.send(`\`\`\`diff\n${sign} ${username}\n\`\`\``);
+  } catch (error) {
+    console.error('[roblox] не смог отправить лог в канал:', error);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // spvkban: duration в ЧАСАХ, 0 → перманент
 // Roblox ждёт duration строкой в секундах: "3600s", либо -1 для пермамента
 // (в JSON перманент иногда принимают как отсутствие duration, надёжнее -1)
+//
+// notify = { client, channelId } — если channelId есть, шлём diff-лог.
 // ─────────────────────────────────────────────────────────────
-async function banByUsername(username, hours, reason, excludeAlts = false) {
+async function banByUsername(username, hours, reason, excludeAlts = false, notify = null) {
   const apiKey = needEnv('ROBLOX_API_KEY');
   const universeId = needEnv('ROBLOX_UNIVERSE_ID');
 
@@ -91,13 +115,17 @@ async function banByUsername(username, hours, reason, excludeAlts = false) {
   };
 
   const res = await patchRestriction({ userId: lookup.id, restriction, apiKey, universeId });
+  if (res.ok) {
+    await announceRestrictionChange(notify, lookup.name ?? username, true);
+  }
   return { ...res, lookup, username };
 }
 
 // ─────────────────────────────────────────────────────────────
 // spvkunban: active:false снимает рестрикшн
+// notify = { client, channelId } — если channelId есть, шлём diff-лог.
 // ─────────────────────────────────────────────────────────────
-async function unbanByUsername(username) {
+async function unbanByUsername(username, notify = null) {
   const apiKey = needEnv('ROBLOX_API_KEY');
   const universeId = needEnv('ROBLOX_UNIVERSE_ID');
 
@@ -110,7 +138,10 @@ async function unbanByUsername(username) {
     apiKey,
     universeId,
   });
+  if (res.ok) {
+    await announceRestrictionChange(notify, lookup.name ?? username, false);
+  }
   return { ...res, lookup, username };
 }
 
-module.exports = { banByUsername, unbanByUsername, getUserIdByUsername };
+module.exports = { banByUsername, unbanByUsername, getUserIdByUsername, announceRestrictionChange };
