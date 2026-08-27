@@ -2,6 +2,7 @@ const {
   SlashCommandBuilder,
   PermissionFlagsBits,
   InteractionContextType,
+  ChannelType,
 } = require('discord.js');
 
 // ─────────────────────────────────────────────────────────────
@@ -26,6 +27,7 @@ const LOOPCLEAR_ALIASES = ['loopclear', 'лупклир'];
 const STOPLOOPCLEAR_ALIASES = ['stoploopclear', 'стоплупклир'];
 const SPVKBAN_ALIASES = ['spvkban', 'спвкбан'];
 const SPVKUNBAN_ALIASES = ['spvkunban', 'спвкразбан'];
+const SETGAMEBANLOGSCHANNEL_ALIASES = ['setgamebanlogschannel', 'установитьканаллоговбанов'];
 
 const ALL_NAMES = [
   ...MUTE_ALIASES,
@@ -34,11 +36,18 @@ const ALL_NAMES = [
   ...STOPLOOPCLEAR_ALIASES,
   ...SPVKBAN_ALIASES,
   ...SPVKUNBAN_ALIASES,
+  ...SETGAMEBANLOGSCHANNEL_ALIASES,
 ];
 
 function mutedOnly(b) {
   return b
     .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+    .setContexts(InteractionContextType.Guild);
+}
+
+function manageGuildOnly(b) {
+  return b
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setContexts(InteractionContextType.Guild);
 }
 
@@ -133,6 +142,20 @@ function buildSpvkUnbanCommand(name) {
   ).addStringOption((o) => o.setName('юзернеймроблокса').setDescription('Ник игрока в Roblox').setRequired(true));
 }
 
+function buildSetGameBanLogsChannelCommand(name) {
+  return manageGuildOnly(
+    new SlashCommandBuilder()
+      .setName(name)
+      .setDescription('Куда слать лог банов/разбанов в игре (Roblox). Без канала — выключить лог'),
+  ).addChannelOption((o) =>
+    o
+      .setName('канал')
+      .setDescription('Текстовый канал для логов. Не выбрать — выключить логи')
+      .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+      .setRequired(false),
+  );
+}
+
 const commandData = [
   ...MUTE_ALIASES.map(buildMuteCommand),
   ...UNMUTE_ALIASES.map(buildUnmuteCommand),
@@ -140,6 +163,7 @@ const commandData = [
   ...STOPLOOPCLEAR_ALIASES.map(buildStopLoopClearCommand),
   ...SPVKBAN_ALIASES.map(buildSpvkBanCommand),
   ...SPVKUNBAN_ALIASES.map(buildSpvkUnbanCommand),
+  ...SETGAMEBANLOGSCHANNEL_ALIASES.map(buildSetGameBanLogsChannelCommand),
 ].map((c) => c.toJSON());
 
 module.exports = {
@@ -150,6 +174,7 @@ module.exports = {
   STOPLOOPCLEAR_ALIASES,
   SPVKBAN_ALIASES,
   SPVKUNBAN_ALIASES,
+  SETGAMEBANLOGSCHANNEL_ALIASES,
   ALL_NAMES,
   commandData,
 };
