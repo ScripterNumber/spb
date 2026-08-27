@@ -10,6 +10,7 @@ const {
   PermissionFlagsBits,
   MessageFlags,
   GuildMFALevel,
+  ChannelType,
 } = require('discord.js');
 
 const {
@@ -20,11 +21,16 @@ const {
   STOPLOOPCLEAR_ALIASES,
   SPVKBAN_ALIASES,
   SPVKUNBAN_ALIASES,
+  // Пока в commands.js не добавлена эта команда — работаем с дефолтом,
+  // чтобы деструктуризация не падала. После апдейта commands.js забери
+  // экспорт оттуда — тут ничего менять не придётся.
+  SETGAMEBANLOGSCHANNEL_ALIASES = ['setgamebanlogschannel'],
   commandData,
 } = require('./commands');
 const { startKeepAlive } = require('./keepalive');
 const loopclear = require('./loopclear');
 const roblox = require('./roblox');
+const settings = require('./settings');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -98,6 +104,10 @@ function findUnits(query) {
   ).slice(0, 25);
 }
 
+function truncate(str, n) {
+  return str.length > n ? `${str.slice(0, n - 1)}…` : str;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Обработчик взаимодействий
 // ─────────────────────────────────────────────────────────────
@@ -124,6 +134,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (STOPLOOPCLEAR_ALIASES.includes(name)) return handleStopLoopClear(interaction);
     if (SPVKBAN_ALIASES.includes(name)) return handleSpvkBan(interaction);
     if (SPVKUNBAN_ALIASES.includes(name)) return handleSpvkUnban(interaction);
+    if (SETGAMEBANLOGSCHANNEL_ALIASES.includes(name)) return handleSetGameBanLogsChannel(interaction);
   } catch (error) {
     console.error('[interaction] ошибка:', error);
     if (interaction.isRepliable()) {
@@ -394,219 +405,4 @@ async function handleLoopClear(interaction) {
     return interaction.reply({
       content:
         current === targetId
-          ? 'Лупклир с такой настройкой уже качается здесь — дождись финиша или останови его через /stoploopclear.'
-          : 'Тут уже идёт очистка (в канале может быть только один лупклир). Останови его: /stoploopclear — и запусти новый.',
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-  const loop = loopclear.startLoop({ channel, targetId, count });
-  if (!loop) {
-    return interaction.editReply({ content: 'Не вышло запустить очистку.', flags: MessageFlags.Ephemeral });
-  }
-
-  const scopeText = targetUser ? `сообщения ${targetUser}` : 'сообщения всех';
-  const limitText = count ? `Проходов: **${count}**.` : 'Пойдём до самого первого сообщения канала.';
-  const oldText =
-    'Старые сообщения (14+ дней, их не берёт массовая чистка) выковыриваются **по одному**, принудительно, быстро и по очереди.';
-
-  await interaction.editReply({
-    content: `Запустил лупклир: чищу ${scopeText} в этом канале.\n${limitText} ${oldText}\nОстановить: /stoploopclear${targetUser ? ` ${targetUser.username}` : ''}`,
-  });
-
-  // Тикаем и докладываем по мере прогресса — раз в ~5 секунд обновляем счётчик.
-  let lastEdit = 0;
-  let lastDeleted = -1;
-  loop.onTick = async ({ deleted = loop.deleted, done = false } = {}) => {
-    const now = Date.now();
-    if (!done && (now - lastEdit < 5000 || deleted === lastDeleted)) return;
-    lastEdit = now;
-    lastDeleted = deleted;
-    const line = done
-      ? `Лупклир финишировал: удалено **${deleted}**.`
-      : `Лупклир качается: удалено **${deleted}**…`;
-    interaction.editReply({ content: `${line}\n${limitText} ${oldText}` }).catch(() => {});
-  };
-}
-
-// ─────────────────────────────────────────────────────────────
-// /stoploopclear (он же /стоплупклир)
-// ─────────────────────────────────────────────────────────────
-async function handleStopLoopClear(interaction) {
-  if (!interaction.inGuild()) {
-    return interaction.reply({ content: 'Команда работает только на сервере.', flags: MessageFlags.Ephemeral });
-  }
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)) {
-    return interaction.reply({ content: 'Нужно право «Модерировать участников».', flags: MessageFlags.Ephemeral });
-  }
-
-  const channel = interaction.channel;
-  const targetUser = interaction.options.getUser('ник'); // null = остановить весь лупклир
-
-  if (!loopclear.isActive(channel.id)) {
-    return interaction.reply({ content: 'В этом канале нет активного лупклира.', flags: MessageFlags.Ephemeral });
-  }
-
-  const current = loopclear.currentTargetId(channel.id);
-  if (targetUser && current && current !== targetUser.id) {
-    return interaction.reply({
-      content: `Сейчас качается лупклир другого фильтра (участник с id ${current}). /stoploopclear без ника остановит его полностью.`,
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-
-  const res = loopclear.stopLoop(channel.id, targetUser?.id ?? null);
-  return interaction.reply({
-    content: res.stopped
-      ? `Остановил лупклир${targetUser ? ` для ${targetUser}` : ''} в этом канале.`
-      : 'Не вышло остановить — похоже, он уже финишировал.',
-  });
-}
-
-// ─────────────────────────────────────────────────────────────
-// /spvkban (он же /спвкбан) — бан в Roblox через Open Cloud
-// ─────────────────────────────────────────────────────────────
-async function handleSpvkBan(interaction) {
-  if (!interaction.inGuild()) {
-    return interaction.reply({ content: 'Команда работает только на сервере.', flags: MessageFlags.Ephemeral });
-  }
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)) {
-    return interaction.reply({ content: 'Нужно право «Модерировать участников».', flags: MessageFlags.Ephemeral });
-  }
-
-  const username = interaction.options.getString('юзернеймроблокса', true).trim();
-  const hours = interaction.options.getInteger('часы', true);
-  const reason = interaction.options.getString('причина', true).trim();
-  const includeAlts = interaction.options.getBoolean('твинки') === true;
-
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-  try {
-    const res = await roblox.banByUsername(username, hours, reason, includeAlts && false /* по умолчанию альтов баним */);
-
-    if (res.reason === 'not_found') {
-      return interaction.editReply({
-        content: `Игрока **${username}** в Roblox не существует.`,
-      });
-    }
-
-    const displayName = res.lookup?.displayName || res.lookup?.name || username;
-    const userId = res.lookup?.id ?? '?';
-    const durationText = hours > 0 ? `${hours} ч.` : 'навсегда';
-
-    const embed = new EmbedBuilder().setTimestamp();
-
-    if (res.ok) {
-      embed
-        .setColor(0x2ecc71)
-        .setTitle('Бан выдан')
-        .addFields(
-          { name: 'Игрок', value: `${displayName} (@${res.lookup?.name ?? username})`, inline: true },
-          { name: 'Roblox ID', value: String(userId), inline: true },
-          { name: 'Срок', value: durationText, inline: true },
-          { name: 'Причина', value: reason, inline: false },
-        );
-      if (includeAlts) embed.setFooter({ text: 'Твинки заблокированы вместе с основным' });
-    } else {
-      embed
-        .setColor(0xe74c3c)
-        .setTitle('Не вышло забанить')
-        .setDescription(`Roblox ответил кодом **${res.status}**.`)
-        .addFields(
-          { name: 'Игрок', value: `${displayName} (@${res.lookup?.name ?? username})`, inline: true },
-          { name: 'Roblox ID', value: String(userId), inline: true },
-        );
-      if (res.raw) embed.addFields({ name: 'Ответ Roblox', value: `\`\`\`${truncate(res.raw, 500)}\`\`\`` });
-    }
-
-    return interaction.editReply({ embeds: [embed] });
-  } catch (error) {
-    console.error('[spvkban] ошибка:', error);
-    const msg = error?.code === 'MISSING_ENV'
-      ? error.message
-      : `Roblox API не ответил: ${error?.message ?? 'неизвестная ошибка'}`;
-    return interaction.editReply({ content: msg });
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// /spvkunban (он же /спвкразбан)
-// ─────────────────────────────────────────────────────────────
-async function handleSpvkUnban(interaction) {
-  if (!interaction.inGuild()) {
-    return interaction.reply({ content: 'Команда работает только на сервере.', flags: MessageFlags.Ephemeral });
-  }
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)) {
-    return interaction.reply({ content: 'Нужно право «Модерировать участников».', flags: MessageFlags.Ephemeral });
-  }
-
-  const username = interaction.options.getString('юзернеймроблокса', true).trim();
-
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-  try {
-    const res = await roblox.unbanByUsername(username);
-
-    if (res.reason === 'not_found') {
-      return interaction.editReply({ content: `Игрока **${username}** в Roblox не существует.` });
-    }
-
-    const displayName = res.lookup?.displayName || res.lookup?.name || username;
-    const userId = res.lookup?.id ?? '?';
-
-    const embed = new EmbedBuilder().setTimestamp();
-
-    if (res.ok) {
-      embed
-        .setColor(0x2ecc71)
-        .setTitle('Игрок разбанен')
-        .addFields(
-          { name: 'Игрок', value: `${displayName} (@${res.lookup?.name ?? username})`, inline: true },
-          { name: 'Roblox ID', value: String(userId), inline: true },
-        );
-    } else {
-      embed
-        .setColor(0xe74c3c)
-        .setTitle('Разбан не прошёл')
-        .setDescription(`Roblox ответил кодом **${res.status}**.`)
-        .addFields(
-          { name: 'Игрок', value: `${displayName} (@${res.lookup?.name ?? username})`, inline: true },
-          { name: 'Roblox ID', value: String(userId), inline: true },
-        );
-      if (res.raw) embed.addFields({ name: 'Ответ Roblox', value: `\`\`\`${truncate(res.raw, 500)}\`\`\`` });
-    }
-
-    return interaction.editReply({ embeds: [embed] });
-  } catch (error) {
-    console.error('[spvkunban] ошибка:', error);
-    const msg = error?.code === 'MISSING_ENV'
-      ? error.message
-      : `Roblox API не ответил: ${error?.message ?? 'неизвестная ошибка'}`;
-    return interaction.editReply({ content: msg });
-  }
-}
-
-function truncate(str, n) {
-  return str.length > n ? `${str.slice(0, n - 1)}…` : str;
-}
-
-// ─────────────────────────────────────────────────────────────
-// АНТИ-ПАДЕНИЕ
-//  • ловим необработанные ошибки, чтобы процесс не умирал
-//  • discord.js сам переподключается к gateway при обрывах
-//  • Render перезапускает контейнер, если он всё же упал
-// ─────────────────────────────────────────────────────────────
-process.on('unhandledRejection', (error) => console.error('[unhandledRejection]', error));
-process.on('uncaughtException', (error) => console.error('[uncaughtException]', error));
-
-startKeepAlive(() => ({
-  bot: client.isReady() ? 'online' : 'starting',
-  user: client.isReady() ? client.user.tag : null,
-}));
-
-client.login(TOKEN).catch((error) => {
-  console.error('[login] не удалось войти:', error);
-  process.exit(1); // Render сам перезапустит инстанс
-});
+          ? 'Лупклир 
