@@ -138,12 +138,12 @@ function startLoop({ channel, targetId = null, count = null }) {
         }
       }
 
-      before = messages[messages.length - 1].id; // следующий шаг глубже в историю
+      before = messages[messages.length - 1].id;
 
-      // страница шла без удаляемых — крутимся сразу; была работа — короткий вдох
-      if (!candidates.length) continue;
-      await sleep(60);
-    }
+-      if (!candidates.length) continue;
+-      await sleep(60);
++      await sleep(candidates.length ? 60 : 300);
+     }
   })().finally(() => {
     loops.delete(channel.id);
     loop.onTick?.({ done: true, deleted: loop.deleted });
