@@ -1,21 +1,7 @@
-// ─────────────────────────────────────────────────────────────
-// ROBLOX POLLER — отслеживает изменения в бан-листе Roblox
-// и шлёт лог в Discord-канал.
-//
-// Работает через polling: каждые POLL_INTERVAL мс запрашивает
-// полный список банов через Open Cloud и сравнивает с предыдущим.
-// Появился новый — пишем «+ Username», исчез — «- Username».
-//
-// Требует права API-ключа: universe.user-restriction → Read
-// ─────────────────────────────────────────────────────────────
-
-const POLL_INTERVAL = 30_000; // раз в 30 секунд
+const POLL_INTERVAL = 30_000;
 const RESTRICTIONS_BASE = 'https://apis.roblox.com/cloud/v2/universes';
 
-// Храним предыдущее состояние: Map<userId, { name, active }>
-// name берём из кэша — Roblox API в списке банов не возвращает ник,
-// только userId, поэтому ник резолвим отдельно через users API.
-const prevBans = new Map(); // userId -> username
+const prevBans = new Map();
 let initialized = false;
 let pollTimer = null;
 
@@ -26,14 +12,14 @@ function sleep(ms) {
   });
 }
 
-// Получить все активные баны (все страницы через pageToken)
 async function fetchAllBans(apiKey, universeId) {
-  const bans = new Map(); // userId -> true
+  const bans = new Map();
   let pageToken = null;
 
   do {
     const url = new URL(`${RESTRICTIONS_BASE}/${universeId}/user-restrictions`);
-    url.searchParams.set('filter', 'gameJoinRestriction.active == true');
+    // Убираем filter — некоторые версии API его игнорируют или не поддерживают,
+    // тянем всё и фильтруем сами
     url.searchParams.set('maxPageSize', '100');
     if (pageToken) url.searchParams.set('pageToken', pageToken);
 
@@ -47,9 +33,20 @@ async function fetchAllBans(apiKey, universeId) {
     }
 
     const json = await res.json();
+
     for (const entry of json.userRestrictions ?? []) {
-      // name вида "universes/xxx/user-restrictions/userId"
-      const userId = entry.user?.split('/').pop() ?? entry.name?.split('/').pop();
+      // Берём только активные баны
+      if (!entry.gameJoinRestriction?.active) continue;
+
+      // userId достаём из поля user или из name
+      // Форматы: "users/12345" или "universes/xxx/user-restrictions/12345"
+      let userId = null;
+      if (entry.user) {
+        userId = entry.user.split('/').pop();
+      } else if (entry.name) {
+        userId = entry.name.split('/').pop();
+      }
+
       if (userId) bans.set(userId, true);
     }
 
@@ -59,15 +56,17 @@ async function fetchAllBans(apiKey, universeId) {
   return bans;
 }
 
-// Резолвим userId -> username пачкой через публичный API
 async function resolveUsernames(userIds) {
   if (!userIds.length) return new Map();
   const res = await fetch('https://users.roblox.com/v1/users', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userIds, excludeBannedUsers: false }),
+    body: JSON.stringify({ userIds: userIds.map(Number), excludeBannedUsers: false }),
   });
-  if (!res.ok) return new Map();
+  if (!res.ok) {
+    console.error('[robloxpoller] resolveUsernames ошибка:', res.status);
+    return new Map();
+  }
   const json = await res.json();
   const map = new Map();
   for (const u of json?.data ?? []) {
@@ -76,13 +75,15 @@ async function resolveUsernames(userIds) {
   return map;
 }
 
-// Отправить diff-сообщение в канал
 async function sendLog(client, channelId, lines) {
   if (!lines.length) return;
+  console.log(`[robloxpoller] шлём лог в канал ${channelId}:`, lines);
   try {
     const channel = await client.channels.fetch(channelId);
-    if (!channel?.isTextBased()) return;
-    // Группируем в одно сообщение, но не больше 1900 символов
+    if (!channel?.isTextBased()) {
+      console.error('[robloxpoller] канал не текстовый или не найден');
+      return;
+    }
     let chunk = '';
     for (const line of lines) {
       if ((chunk + line + '\n').length > 1900) {
@@ -97,7 +98,6 @@ async function sendLog(client, channelId, lines) {
   }
 }
 
-// Один цикл опроса
 async function poll({ client, getChannelId, apiKey, universeId }) {
   let currentBans;
   try {
@@ -107,63 +107,59 @@ async function poll({ client, getChannelId, apiKey, universeId }) {
     return;
   }
 
-  // При первом запуске просто запоминаем состояние, ничего не логируем
   if (!initialized) {
     for (const [userId] of currentBans) {
-      prevBans.set(userId, '?'); // ник узнаем при следующем изменении
+      prevBans.set(userId, '?');
     }
     initialized = true;
     console.log(`[robloxpoller] инициализация: ${currentBans.size} активных банов`);
     return;
   }
 
-  // Новые баны (появились с прошлого опроса)
+  // Новые баны
   const added = [];
   for (const [userId] of currentBans) {
     if (!prevBans.has(userId)) added.push(userId);
   }
 
-  // Снятые баны (исчезли с прошлого опроса)
+  // Снятые баны
   const removed = [];
   for (const [userId] of prevBans) {
     if (!currentBans.has(userId)) removed.push(userId);
   }
 
-  if (!added.length && !removed.length) return; // изменений нет
+  console.log(`[robloxpoller] poll: было=${prevBans.size} стало=${currentBans.size} +${added.length} -${removed.length}`);
 
-  // Резолвим ники для новых userId
+  if (!added.length && !removed.length) return;
+
+  // Резолвим только неизвестные ники
   const needResolve = [...added, ...removed].filter((id) => !prevBans.get(id) || prevBans.get(id) === '?');
   const resolved = await resolveUsernames(needResolve);
 
-  // Обновляем кэш
+  const lines = [];
+
   for (const userId of added) {
-    prevBans.set(userId, resolved.get(userId) ?? userId);
+    const name = resolved.get(userId) ?? userId;
+    prevBans.set(userId, name);
+    lines.push(`+ ${name}`);
   }
 
-  const lines = [];
-  for (const userId of added) {
-    lines.push(`+ ${prevBans.get(userId) ?? userId}`);
-  }
   for (const userId of removed) {
-    lines.push(`- ${prevBans.get(userId) ?? userId}`);
+    const name = prevBans.get(userId) ?? userId;
+    lines.push(`- ${name}`);
     prevBans.delete(userId);
   }
 
   const channelId = getChannelId();
+  console.log(`[robloxpoller] channelId из settings: ${channelId}`);
+
   if (channelId && lines.length) {
     await sendLog(client, channelId, lines);
+  } else if (!channelId) {
+    console.warn('[robloxpoller] канал логов не задан — пропускаем отправку');
   }
-
-  console.log(`[robloxpoller] изменения: +${added.length} -${removed.length}`);
 }
 
-// ─────────────────────────────────────────────────────────────
-// Запуск поллера. Вызвать один раз при старте бота.
-//
-//   client      — discord.js Client (должен быть ready)
-//   getChannelId — функция () => string|null, возвращает текущий
-//                  channelId из settings (может меняться в рантайме)
-// ─────────────────────────────────────────────────────────────
 function startPoller({ client, getChannelId }) {
   const apiKey = process.env.ROBLOX_API_KEY;
   const universeId = process.env.ROBLOX_UNIVERSE_ID;
