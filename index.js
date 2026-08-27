@@ -73,7 +73,7 @@ async function registerCommands() {
    registerCommands();
   robloxpoller.startPoller({
     client: readyClient,
-    getChannelId: () => settings.getBanLogChannel(GUILD_ID),
+    getChannelId: () => settings.getBanLogChannel(null),
   });
  });
 
