@@ -1,8 +1,9 @@
 const {
   SlashCommandBuilder,
+  ContextMenuCommandBuilder,
+  ApplicationCommandType,
   PermissionFlagsBits,
   InteractionContextType,
-  ChannelType,
 } = require('discord.js');
 
 // ─────────────────────────────────────────────────────────────
@@ -27,7 +28,13 @@ const LOOPCLEAR_ALIASES = ['loopclear', 'лупклир'];
 const STOPLOOPCLEAR_ALIASES = ['stoploopclear', 'стоплупклир'];
 const SPVKBAN_ALIASES = ['spvkban', 'спвкбан'];
 const SPVKUNBAN_ALIASES = ['spvkunban', 'спвкразбан'];
-const SETGAMEBANLOGSCHANNEL_ALIASES = ['setgamebanlogschannel', 'установитьканаллоговбанов'];
+const GIFBLACKLIST_ALIASES = ['gifblacklist', 'гифблеклист'];
+
+// Контекстные команды (ПКМ по сообщению → Приложения): «сделать с этим сообщением».
+// Именно они закрывают сценарий «ответить командой на сообщение человека» —
+// слэш-команда не видит, на какое сообщение её вызвали, а контекстная видит.
+const GIF_CONTEXT_ADD = 'Gif Blacklist Add';
+const GIF_CONTEXT_REMOVE = 'Gif Blacklist Remove';
 
 const ALL_NAMES = [
   ...MUTE_ALIASES,
@@ -36,18 +43,12 @@ const ALL_NAMES = [
   ...STOPLOOPCLEAR_ALIASES,
   ...SPVKBAN_ALIASES,
   ...SPVKUNBAN_ALIASES,
-  ...SETGAMEBANLOGSCHANNEL_ALIASES,
+  ...GIFBLACKLIST_ALIASES,
 ];
 
 function mutedOnly(b) {
   return b
     .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
-    .setContexts(InteractionContextType.Guild);
-}
-
-function manageGuildOnly(b) {
-  return b
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setContexts(InteractionContextType.Guild);
 }
 
@@ -142,19 +143,76 @@ function buildSpvkUnbanCommand(name) {
   ).addStringOption((o) => o.setName('юзернеймроблокса').setDescription('Ник игрока в Roblox').setRequired(true));
 }
 
-function buildSetGameBanLogsChannelCommand(name) {
-  return manageGuildOnly(
+function buildGifBlacklistCommand(name) {
+  return mutedOnly(
     new SlashCommandBuilder()
       .setName(name)
-      .setDescription('Куда слать лог банов/разбанов в игре (Roblox). Без канала — выключить лог'),
-  ).addChannelOption((o) =>
-    o
-      .setName('канал')
-      .setDescription('Текстовый канал для логов. Не выбрать — выключить логи')
-      .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
-      .setRequired(false),
-  );
+      .setDescription('Чёрный список гифок: бот сам удаляет их из чата'),
+  )
+    .addSubcommand((sub) =>
+      sub
+        .setName('add')
+        .setDescription('Добавить гифку в чёрный список — сообщения с ней бот будет удалять')
+        .addStringOption((o) =>
+          o
+            .setName('ссылка')
+            .setDescription('Ссылка на гифку. Пусто — откроется окошко для вставки ссылки')
+            .setRequired(false),
+        )
+        .addStringOption((o) =>
+          o
+            .setName('сообщение')
+            .setDescription('Ссылка на сообщение (ПКМ → Копировать ссылку на сообщение) — бот сам найдёт гифку')
+            .setRequired(false),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('remove')
+        .setDescription('Убрать гифку из чёрного списка')
+        .addIntegerOption((o) =>
+          o.setName('номер').setDescription('Номер записи из /gifblacklist list').setRequired(false).setMinValue(1),
+        )
+        .addStringOption((o) =>
+          o
+            .setName('ссылка')
+            .setDescription('Любая ссылка на эту же гифку. Пусто — откроется окошко для вставки')
+            .setRequired(false),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('addwhitelist')
+        .setDescription('Кому можно отправлять заблокированные гифки: участник и/или роль')
+        .addUserOption((o) =>
+          o.setName('участник').setDescription('Этому участнику блеклист не помеха').setRequired(false),
+        )
+        .addRoleOption((o) =>
+          o.setName('роль').setDescription('Участники с этой ролью игнорируют блеклист').setRequired(false),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('removewhitelist')
+        .setDescription('Убрать участника или роль из вайтлиста')
+        .addUserOption((o) => o.setName('участник').setDescription('Кого убрать из вайтлиста').setRequired(false))
+        .addRoleOption((o) => o.setName('роль').setDescription('Какую роль убрать из вайтлиста').setRequired(false)),
+    )
+    .addSubcommand((sub) => sub.setName('list').setDescription('Показать чёрный список и вайтлист'));
 }
+
+const contextCommandData = [
+  new ContextMenuCommandBuilder()
+    .setName(GIF_CONTEXT_ADD)
+    .setType(ApplicationCommandType.Message)
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+    .setContexts(InteractionContextType.Guild),
+  new ContextMenuCommandBuilder()
+    .setName(GIF_CONTEXT_REMOVE)
+    .setType(ApplicationCommandType.Message)
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+    .setContexts(InteractionContextType.Guild),
+].map((c) => c.toJSON());
 
 const commandData = [
   ...MUTE_ALIASES.map(buildMuteCommand),
@@ -163,8 +221,12 @@ const commandData = [
   ...STOPLOOPCLEAR_ALIASES.map(buildStopLoopClearCommand),
   ...SPVKBAN_ALIASES.map(buildSpvkBanCommand),
   ...SPVKUNBAN_ALIASES.map(buildSpvkUnbanCommand),
-  ...SETGAMEBANLOGSCHANNEL_ALIASES.map(buildSetGameBanLogsChannelCommand),
+  ...GIFBLACKLIST_ALIASES.map(buildGifBlacklistCommand),
 ].map((c) => c.toJSON());
+
+// ВАЖНО: Discord регистрирует команды пакетным перезаписыванием (bulk overwrite),
+// поэтому в одном запросе должны лежать ВСЕ типы команд — и слэш-, и контекстные.
+const allCommandData = [...commandData, ...contextCommandData];
 
 module.exports = {
   UNITS,
@@ -174,7 +236,11 @@ module.exports = {
   STOPLOOPCLEAR_ALIASES,
   SPVKBAN_ALIASES,
   SPVKUNBAN_ALIASES,
-  SETGAMEBANLOGSCHANNEL_ALIASES,
+  GIFBLACKLIST_ALIASES,
+  GIF_CONTEXT_ADD,
+  GIF_CONTEXT_REMOVE,
   ALL_NAMES,
   commandData,
+  contextCommandData,
+  allCommandData,
 };

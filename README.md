@@ -25,6 +25,10 @@
 - `/spvkban`, `/спвкбан` — бан игрока в Roblox по нику через Open Cloud (Open Cloud Ban API).
   Нужен `ROBLOX_API_KEY` с правом `universe.user-restriction:write` и `ROBLOX_UNIVERSE_ID`.
   Время в часах, 0 = перманент. `/spvkunban`, `/спвкразбан` — разбан по нику.
+- `/gifblacklist`, `/гифблеклист` — **чёрный список гифок**. Добавил ссылку на гифку —
+  и бот удаляет её из чата сразу, как только кто-то её пришлёт (ссылкой, эмбедом или
+  даже залив файл заново). Внутри — `add`, `remove`, `addwhitelist`, `removewhitelist`,
+  `list`; данные лежат в `configs/gifblacklist.json`. Подробности — в разделе ниже.
 - Анти-падение: обработка всех ошибок, авто-реконнект gateway, keep-alive сервер
   на порту 10000. Прогресс лупклира выводится обновлением одного сообщения, так что
   видно, сколько уже удалил.
@@ -36,8 +40,11 @@
 1. Зайди на https://discord.com/developers/applications → **New Application**.
 2. Вкладка **Bot** → **Reset Token** → скопируй токен → это `DISCORD_TOKEN`.
 3. Вкладка **General Information** → **Application ID** → это `CLIENT_ID`.
-4. Включать privileged intents **не обязательно**: slash-командам не нужен
-   Message Content Intent, а участник приходит прямо во взаимодействии.
+4. Вкладка **Bot** → **Privileged Gateway Intents** → включи **Message Content Intent**.
+   Он нужен фильтру гифок (`/gifblacklist`): без этого intent Discord отдаёт боту
+   пустые `content`, `embeds` и `attachments`, а при старте вообще рвёт подключение
+   (close code 4014), и бот не поднимется. Слэш-командам intent не нужен, а вот
+   фильтру сообщений — жизненно необходим.
 
 ## 2. Инвайт бота с правами
 
@@ -45,12 +52,14 @@ OAuth2 → URL Generator:
 
 - Scopes: `bot` + `applications.commands`
 - Bot Permissions: `View Channels`, `Send Messages`, `Embed Links`,
+  `Manage Messages` (нужно, чтобы удалять гифки из блеклиста),
+  `Read Message History` (нужно, чтобы читать сообщение по ссылке),
   `Moderate Members` (или **Administrator** — тогда вообще все права)
 
 Готовый шаблон ссылки (подставь свой ID):
 
 ```
-https://discord.com/oauth2/authorize?client_id=ТВОЙ_CLIENT_ID&scope=bot+applications.commands&permissions=1099511647232
+https://discord.com/oauth2/authorize?client_id=ТВОЙ_CLIENT_ID&scope=bot+applications.commands&permissions=1099511720960
 ```
 
 (`permissions=8` вместо длинного числа — это Administrator, если хочешь все права разом.)
@@ -72,6 +81,7 @@ https://discord.com/oauth2/authorize?client_id=ТВОЙ_CLIENT_ID&scope=bot+appl
    - `DISCORD_TOKEN` — токен бота
    - `CLIENT_ID` — ID приложения
    - `GUILD_ID` — ID сервера (опционально, для мгновенной регистрации команд)
+   - `GIF_BLACKLIST_LOG_CHANNEL_ID` — канал для лога удалённых гифок (опционально)
 5. Deploy. В логах должно появиться:
    `[keep-alive] HTTP-сервер слушает порт 10000` и `[bot] вошли как ...`
 
@@ -101,6 +111,66 @@ cp .env.example .env   # и заполнить токены
 npm run register       # регистрация команд (мгновенно, если задан GUILD_ID)
 npm start
 ```
+
+## `/gifblacklist` — чёрный список гифок
+
+Бот следит за сообщениями и **сам удаляет** те, где есть гифка из блеклиста: и ссылка
+в тексте, и автопревью/эмбед, и вложение (тот же файл, залитый заново). Правки сообщений
+тоже проверяются — иначе блеклист обходится «дописал ссылку после отправки».
+
+```
+/gifblacklist add                          ← откроется окошко «вставь ссылку»
+/gifblacklist add ссылка:https://images-ext-1.discordapp.net/external/…/15LKtkqmWrMszDt.mp4
+/gifblacklist add ссылка:https://static.klipy.com/ii/…/15LKtkqmWrMszDt.mp4
+/gifblacklist add сообщение:https://discord.com/channels/…/…    ← ссылка на сообщение с гифкой
+/gifblacklist remove номер:1
+/gifblacklist remove ссылка:https://…      ← достаточно любой ссылки на ту же гифку
+/gifblacklist addwhitelist участник:@ник
+/gifblacklist addwhitelist роль:@роль
+/gifblacklist removewhitelist участник:@ник
+/gifblacklist removewhitelist роль:@роль
+/gifblacklist list                         ← что в блеклисте и вайтлисте
+```
+
+Плюс две **контекстные команды**: ПКМ по сообщению → «Приложения» →
+**Gif Blacklist Add** / **Gif Blacklist Remove**. Это и есть «ответить командой на
+сообщение»: слэш-команда не знает, на какое сообщение её вызвали, а контекстная знает —
+и сама вытащит из сообщения все гифки (ссылки, эмбеды, вложения).
+
+### Почему ловится одна и та же гифка под разными ссылками
+
+В блеклист пишется не строка, а набор подписей (`gifblacklist.js`): «хост + путь»,
+длинные хеш-токены из пути, имя файла, а для прокси Discord — ещё и внутренняя
+(оригинальная) ссылка. Поэтому одна и та же гифка ловится, приди она прямой ссылкой
+`static.klipy.com/ii/<id>/…`, через прокси `images-ext-1/-2.discordapp.net/external/<hmac>/https/…`,
+с query-подписью `?ex=…&is=…&hm=…` или с другого домена прокси. Второй эшелон: при
+`add` бот скачивает файл (до 16 МБ) и запоминает `sha256` + размер — если тот же файл
+зальют заново (новый URL вложения), он всё равно удалится.
+
+### Вайтлист
+
+`addwhitelist` принимает и участника, и роль — можно указать оба сразу. Владелец
+сервера и участники с правом **Administrator** блеклист игнорируют всегда
+(константа `BYPASS_ADMINS` в `gifblacklist.js` — поставь `false`, если не нужно).
+
+### Где лежат данные
+
+`configs/gifblacklist.json` — секции `gifs`, `whitelist.users`, `whitelist.roles`.
+Файл можно править руками и коммитить в репозиторий: тогда после редеплоя список
+восстановится. Путь переопределяется переменной `GIF_BLACKLIST_PATH`.
+**Важно:** на бесплатном Render диск эфемерный — то, что добавили через команды,
+потеряется при редеплое/рестарте инстанса (коммит файла или постоянный диск решают это).
+
+### Что нужно для работы
+
+1. **Message Content Intent** — Developer Portal → Bot → Privileged Gateway Intents.
+2. Права бота: `Manage Messages` (удалять сообщения), `Read Message History` (читать
+   сообщение по ссылке), `View Channels`, `Embed Links`.
+3. Бот ничего не пишет в чат: ответы и ошибки команд с гифками видит только тот, кто их
+   вызвал (эфемерные сообщения — так же, как у `/spvkban`). Если удаление не удалось,
+   пояснение уходит в ЛС тому, кто добавил эту запись в блеклист, а строка
+   `[gifblacklist] …` — в консоль Render. Хочешь складывать все удаления в канал —
+   задай `GIF_BLACKLIST_LOG_CHANNEL_ID`.
 
 ## Как добавить свой аллиас
 
