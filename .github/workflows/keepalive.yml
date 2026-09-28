@@ -1,0 +1,79 @@
+# ─────────────────────────────────────────────────────────────
+# ВНЕШНИЙ АВТОБОТ: пингует Render каждые 5 минут.
+#
+# Зачем: бесплатный инстанс Render засыпает после 15 минут БЕЗ ВХОДЯЩЕГО
+# трафика, а сон рвёт gateway Discord — снаружи это выглядит как «бот молча
+# лёг». Этот workflow даёт гарантированный внешний трафик, даже если процесс
+# умер: запрос приходит на edge Render и поднимает контейнер.
+#
+# Три слоя защиты от засыпания:
+#   1. самопинг внутри бота (keepalive.js, каждые 4 минуты);
+#   2. этот workflow (каждые 5 минут, из GitHub — не из инстанса);
+#   3. сторожевой пёс в боте: перезапускает gateway, а если не помогло — exit(1),
+#      и Render поднимает контейнер заново.
+#
+# Настройка (один раз): Settings → Secrets and variables → Actions → Variables →
+# New repository variable → Name: RENDER_URL, Value: https://имя-сервиса.onrender.com
+# ─────────────────────────────────────────────────────────────
+name: keepalive
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # каждые 5 минут (GitHub под нагрузкой может задержать)
+  workflow_dispatch:
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Пинг /healthz (трафик + прогрев + состояние бота)
+        env:
+          # Ссылку на сервис можно положить двумя способами (любой сработает):
+          #   1) рекомендуемый: Settings → Secrets and variables → Actions → Variables → RENDER_URL
+          #   2) быстрый: впиши её в DEFAULT_URL прямо здесь, в этом файле
+          RENDER_URL_VAR: ${{ vars.RENDER_URL || secrets.RENDER_URL }}
+        run: |
+          DEFAULT_URL=""   # ← сюда можно вставить https://имя-сервиса.onrender.com
+          TARGET="${RENDER_URL_VAR:-$DEFAULT_URL}"
+
+          if [ -z "$TARGET" ]; then
+            echo "::warning::Ссылки нет: добавь repository variable RENDER_URL (Settings → Secrets and variables → Actions → Variables) или впиши её в DEFAULT_URL в этом файле"
+            exit 0
+          fi
+
+          URL="${TARGET%/}/healthz"
+          code="000"
+          for attempt in 1 2 3; do
+            echo "Попытка $attempt: $URL"
+            code=$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 60 "$URL" || echo "000")
+            echo "HTTP $code"
+            # 200 — бот готов; 503 — инстанс жив, но gateway ещё поднимается.
+            # Оба ответа = трафик дошёл, сон не начнётся.
+            if [ "$code" = "200" ] || [ "$code" = "503" ]; then
+              cat /tmp/health.json || true
+              exit 0
+            fi
+            sleep 20
+          done
+
+          echo "::warning::Render не ответил за 3 попытки (последний код: $code) — проверь сервис в панели Render"
+          code="000"
+          for attempt in 1 2 3; do
+            echo "Попытка $attempt: $URL"
+            code=$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 60 "$URL" || echo "000")
+            echo "HTTP $code"
+            # 200 — бот готов; 503 — инстанс жив, но gateway ещё поднимается.
+            # Оба ответа = трафик дошёл, сон не начнётся.
+            if [ "$code" = "200" ] || [ "$code" = "503" ]; then
+              cat /tmp/health.json || true
+              exit 0
+            fi
+            sleep 20
+          done
+
+          echo "::warning::Render не ответил за 3 попытки (последний код: $code) — проверь сервис в панели Render"
