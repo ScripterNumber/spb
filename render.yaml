@@ -18,3 +18,7 @@ services:
         sync: false
       - key: ROBLOX_UNIVERSE_ID
         sync: false
+      - key: LOG_CHANNEL_ID
+        sync: false
+      - key: PING_URL
+        sync: false

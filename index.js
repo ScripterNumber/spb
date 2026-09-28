@@ -25,6 +25,8 @@ const {
   SPVKBAN_ALIASES,
   SPVKUNBAN_ALIASES,
   GIFBLACKLIST_ALIASES,
+  NAME_TO_ID_ALIASES,
+  ROBLOX_INFO_ALIASES,
   GIF_CONTEXT_ADD,
   GIF_CONTEXT_REMOVE,
   allCommandData,
@@ -41,6 +43,18 @@ const GUILD_ID = process.env.GUILD_ID; // опционально — для мг
 // Жёсткий лимит Discord API на тайм-аут — 28 дней.
 // Если попросят больше — честно выдаём максимум и говорим об этом.
 const MAX_TIMEOUT = 28 * 24 * 60 * 60 * 1000;
+
+// ─────────────────────────────────────────────────────────────
+// Политика за спам заблокированными гифками
+// ─────────────────────────────────────────────────────────────
+const GIF_STRIKE_LIMIT = 3; // столько отправлений в блеклистнутую гифку — и мут
+const GIF_STRIKE_WINDOW_MS = 24 * 60 * 60 * 1000; // окно, в котором копятся страйки
+const GIF_STRIKE_TIMEOUT_MS = 30 * 60 * 1000; // мут на полчаса
+const GIF_STRIKE_REASON = 'Спам запрещенными гифками';
+
+// Единый мод-лог: баны, разбаны, муты за гифки, сон и перезапуски бота.
+// Подойдёт любое из двух имён переменной окружения.
+const LOG_CHANNEL_ID = (process.env.LOG_CHANNEL_ID || process.env.BAN_LOG_CHANNEL_ID || '').trim();
 
 if (!TOKEN || !CLIENT_ID) {
   console.error('[bot] Заполни DISCORD_TOKEN и CLIENT_ID в переменных окружения!');
@@ -78,6 +92,18 @@ async function registerCommands() {
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`[bot] вошли как ${readyClient.user.tag}`);
   registerCommands();
+
+  // «Не молча»: о каждом подъёме бота сообщаем в мод-лог-канал,
+  // чтобы рестарт был виден глазами, а не только в логах Render.
+  sendLog(
+    {
+      content:
+        `🟢 Бот на связи: **${readyClient.user.tag}** · ` +
+        `uptime ${Math.round(process.uptime())} c · RSS ${Math.round(process.memoryUsage().rss / 1024 / 1024)} МБ · ` +
+        `гифок в блеклисте: ${gifblacklist.listGifs().length}`,
+    },
+    'уведомление о запуске',
+  );
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -110,6 +136,47 @@ function findUnits(query) {
   return UNITS.filter(
     (u) => u.label.toLowerCase().includes(q) || u.value.toLowerCase().includes(q),
   ).slice(0, 25);
+}
+
+// Одно место для всего мод-лога: баны, разбаны, муты, сон и перезапуски бота.
+async function sendLog(payload, description = 'лог') {
+  if (!LOG_CHANNEL_ID) return false;
+  try {
+    const channel = await client.channels.fetch(LOG_CHANNEL_ID);
+    if (!channel?.isTextBased?.()) {
+      console.warn(`[log] канал ${LOG_CHANNEL_ID} не текстовый — «${description}» никуда не ушёл`);
+      return false;
+    }
+    await channel.send(payload);
+    return true;
+  } catch (error) {
+    console.error(`[log] не смог отправить «${description}» в канал ${LOG_CHANNEL_ID}: ${error?.message}`);
+    return false;
+  }
+}
+
+// «7 лет 3 месяца (с 12.03.2019)» — для /getrobloxinfo
+function formatAccountAge(createdIso) {
+  const created = Date.parse(createdIso ?? '');
+  if (!Number.isFinite(created)) return 'неизвестно';
+
+  const days = Math.floor(Math.max(0, Date.now() - created) / 86_400_000);
+  const years = Math.floor(days / 365.25);
+  const months = Math.floor((days - years * 365.25) / 30.44);
+
+  const parts = [];
+  if (years) parts.push(`${years} ${plural(years, 'год', 'года', 'лет')}`);
+  if (months) parts.push(`${months} ${plural(months, 'месяц', 'месяца', 'месяцев')}`);
+  if (!parts.length) parts.push(`${days} ${plural(days, 'день', 'дня', 'дней')}`);
+
+  const date = new Date(created);
+  const stamp = [
+    String(date.getUTCDate()).padStart(2, '0'),
+    String(date.getUTCMonth() + 1).padStart(2, '0'),
+    date.getUTCFullYear(),
+  ].join('.');
+
+  return `${parts.join(' ')} (с ${stamp})`;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -145,6 +212,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (SPVKBAN_ALIASES.includes(name)) return handleSpvkBan(interaction);
     if (SPVKUNBAN_ALIASES.includes(name)) return handleSpvkUnban(interaction);
     if (GIFBLACKLIST_ALIASES.includes(name)) return handleGifBlacklist(interaction);
+    if (NAME_TO_ID_ALIASES.includes(name)) return handleNameToId(interaction);
+    if (ROBLOX_INFO_ALIASES.includes(name)) return handleRobloxInfo(interaction);
   } catch (error) {
     console.error('[interaction] ошибка:', error);
     if (interaction.isRepliable()) {
@@ -542,6 +611,26 @@ async function handleSpvkBan(interaction) {
       if (res.raw) embed.addFields({ name: 'Ответ Roblox', value: `\`\`\`${truncate(res.raw, 500)}\`\`\`` });
     }
 
+    // Бан дублируется в мод-лог-канал: видно автоматически, а не «само пропало».
+    await sendLog(
+      {
+        embeds: [
+          new EmbedBuilder()
+            .setColor(res.ok ? 0x2ecc71 : 0xe74c3c)
+            .setTitle(res.ok ? `🔨 Бан выдан — ${displayName}` : `⚠️ Бан не прошёл — ${displayName}`)
+            .addFields(
+              { name: 'Игрок', value: `${displayName} (@${res.lookup?.name ?? username})`, inline: true },
+              { name: 'Roblox ID', value: String(userId), inline: true },
+              { name: 'Срок', value: durationText, inline: true },
+              { name: 'Причина', value: reason, inline: false },
+              { name: 'Модератор', value: `${interaction.user} (${interaction.user.tag})`, inline: false },
+            )
+            .setTimestamp(),
+        ],
+      },
+      'лог бана',
+    );
+
     return interaction.editReply({ embeds: [embed] });
   } catch (error) {
     console.error('[spvkban] ошибка:', error);
@@ -599,6 +688,24 @@ async function handleSpvkUnban(interaction) {
       if (res.raw) embed.addFields({ name: 'Ответ Roblox', value: `\`\`\`${truncate(res.raw, 500)}\`\`\`` });
     }
 
+    // Разбан — тоже в мод-лог.
+    await sendLog(
+      {
+        embeds: [
+          new EmbedBuilder()
+            .setColor(res.ok ? 0x2ecc71 : 0xe74c3c)
+            .setTitle(res.ok ? `🔓 Разбан — ${displayName}` : `⚠️ Разбан не прошёл — ${displayName}`)
+            .addFields(
+              { name: 'Игрок', value: `${displayName} (@${res.lookup?.name ?? username})`, inline: true },
+              { name: 'Roblox ID', value: String(userId), inline: true },
+              { name: 'Модератор', value: `${interaction.user} (${interaction.user.tag})`, inline: false },
+            )
+            .setTimestamp(),
+        ],
+      },
+      'лог разбана',
+    );
+
     return interaction.editReply({ embeds: [embed] });
   } catch (error) {
     console.error('[spvkunban] ошибка:', error);
@@ -611,6 +718,98 @@ async function handleSpvkUnban(interaction) {
 
 function truncate(str, n) {
   return str.length > n ? `${str.slice(0, n - 1)}…` : str;
+}
+
+// ─────────────────────────────────────────────────────────────
+// /nametouserid — ник Roblox → Roblox ID (ответ видит только вызвавший)
+// ─────────────────────────────────────────────────────────────
+async function handleNameToId(interaction) {
+  if (!interaction.inGuild()) {
+    return interaction.reply({ content: 'Команда работает только на сервере.', flags: MessageFlags.Ephemeral });
+  }
+
+  const input = interaction.options.getString('ник', true).trim();
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const user = await roblox.resolveRobloxUser(input);
+    if (!user) return interaction.editReply({ content: `Игрока **${input}** в Roblox не существует.` });
+
+    const profile = `https://www.roblox.com/users/${user.id}/profile`;
+    const embed = new EmbedBuilder()
+      .setColor(0x2ecc71)
+      .setTitle('Roblox ID найден')
+      .addFields(
+        { name: 'Ник', value: `[${user.name}](${profile})`, inline: true },
+        { name: 'Дисплей ник', value: `${user.displayName ?? user.name}`, inline: true },
+        { name: 'Roblox ID', value: `\`${user.id}\``, inline: true },
+      )
+      .setURL(profile)
+      .setFooter({ text: 'Ответ видишь только ты — в чат он не пишется' })
+      .setTimestamp();
+
+    embed.setThumbnail(await roblox.getHeadshotUrl(user.id, '150x150'));
+    return interaction.editReply({ embeds: [embed] });
+  } catch (error) {
+    console.error('[nametouserid] ошибка:', error);
+    return interaction.editReply({ content: `Roblox API не ответил: ${error?.message ?? 'неизвестная ошибка'}` });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// /getrobloxinfo — аватарка, возраст аккаунта, подписки, подписчики, друзья
+// ─────────────────────────────────────────────────────────────
+async function handleRobloxInfo(interaction) {
+  if (!interaction.inGuild()) {
+    return interaction.reply({ content: 'Команда работает только на сервере.', flags: MessageFlags.Ephemeral });
+  }
+
+  const input = interaction.options.getString('игрок', true).trim();
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const user = await roblox.resolveRobloxUser(input);
+    if (!user) return interaction.editReply({ content: `Игрока **${input}** в Roblox не существует.` });
+
+    const id = user.id;
+    // Аватарку и счётчики тянем параллельно — команда отвечает заметно быстрее.
+    const [headshot, counts] = await Promise.all([roblox.getHeadshotUrl(id), roblox.getSocialCounts(id)]);
+
+    const profile = `https://www.roblox.com/users/${id}/profile`;
+    const friends = `https://www.roblox.com/users/${id}/friends`;
+    const num = (value) => (Number.isFinite(value) ? value.toLocaleString('ru-RU') : '—');
+
+    const embed = new EmbedBuilder()
+      .setColor(0x00a2ff)
+      .setAuthor({
+        name: `${user.displayName ?? user.name}${user.hasVerifiedBadge ? ' ☑' : ''}`,
+        iconURL: headshot,
+        url: profile,
+      })
+      .setTitle('Профиль Roblox')
+      .setImage(headshot) // большая аватарка 420×420
+      .addFields(
+        { name: 'Ник', value: `[${user.name}](${profile})`, inline: true },
+        { name: 'Дисплей ник', value: `${user.displayName ?? user.name}`, inline: true },
+        { name: 'Roblox ID', value: `\`${id}\``, inline: true },
+        { name: 'Возраст аккаунта', value: formatAccountAge(user.created), inline: false },
+        { name: 'Подписок', value: `[${num(counts.followings)}](${friends}#!/following)`, inline: true },
+        { name: 'Подписчиков', value: `[${num(counts.followers)}](${friends}#!/followers)`, inline: true },
+        { name: 'Друзей', value: `[${num(counts.friends)}](${friends})`, inline: true },
+        { name: 'Профиль роблокса', value: `[открыть профиль](${profile})`, inline: false },
+      )
+      .setTimestamp();
+
+    if (user.isBanned) embed.addFields({ name: 'Статус', value: '⚠️ аккаунт забанен Roblox', inline: false });
+    if (counts.followings === null && counts.followers === null && counts.friends === null) {
+      embed.setFooter({ text: 'Счётчики Roblox сейчас не отдаёт — остальное показано как есть' });
+    }
+
+    return interaction.editReply({ embeds: [embed] });
+  } catch (error) {
+    console.error('[getrobloxinfo] ошибка:', error);
+    return interaction.editReply({ content: `Roblox API не ответил: ${error?.message ?? 'неизвестная ошибка'}` });
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -844,6 +1043,7 @@ async function handleGifWhitelist(interaction, adding) {
 async function handleGifList(interaction) {
   const gifs = gifblacklist.listGifs();
   const whitelist = gifblacklist.listWhitelist();
+  const strikes = gifblacklist.listStrikes();
 
   const embed = new EmbedBuilder()
     .setColor(0x5865f2)
@@ -862,6 +1062,15 @@ async function handleGifList(interaction) {
       {
         name: `Вайтлист: роли (${whitelist.roles.length})`,
         value: whitelist.roles.length ? whitelist.roles.map((r) => `<@&${r.id}>`).slice(0, 15).join(' ') : 'пусто',
+      },
+      {
+        name: `Страйки до мута (${GIF_STRIKE_LIMIT})`,
+        value: strikes.length
+          ? strikes
+              .slice(0, 10)
+              .map((s) => `<@${s.userId}> — ${s.count}/${GIF_STRIKE_LIMIT}`)
+              .join('\n')
+          : 'пусто',
       },
     )
     .setFooter({ text: 'Владелец сервера и админы блеклист игнорируют (BYPASS_ADMINS в gifblacklist.js)' })
@@ -996,7 +1205,88 @@ async function deleteBlacklistedMessage(message, matches) {
       .join(', ')})`,
   );
 
+  // Страйк: 3 заблокированные гифки → мут на полчаса за спам.
+  const strike = gifblacklist.addStrike(message.author.id, GIF_STRIKE_WINDOW_MS);
+  console.log(`[gifblacklist] страйк ${strike.count}/${GIF_STRIKE_LIMIT} для ${message.author?.tag}`);
+  if (strike.count >= GIF_STRIKE_LIMIT) await punishGifSpam(message, strike);
+
   await logBlacklistHit(message, matches);
+}
+
+// ─────────────────────────────────────────────────────────────
+// МУТ ЗА СПАМ ГИФКАМИ: 3 нарушения → 30 минут (в чат ничего не пишем)
+// ─────────────────────────────────────────────────────────────
+async function punishGifSpam(message, strike) {
+  const guild = message.guild;
+  const member = message.member ?? (await guild.members.fetch({ user: message.author.id }).catch(() => null));
+  if (!member) {
+    console.warn(`[gifblacklist] не нашёл участника ${message.author?.id} для мута`);
+    return;
+  }
+  if (member.user.bot || member.id === guild.ownerId) {
+    console.warn(`[gifblacklist] ${member.user.tag} мут не выдать (бот или владелец сервера) — страйки сбрасываю`);
+    gifblacklist.resetStrikes(member.id);
+    return;
+  }
+
+  const me = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+  if (!me?.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+    console.error('[gifblacklist] у моей роли нет права «Модерировать участников» — мут за гифки не выдать');
+    return;
+  }
+  if (me.roles.highest.comparePositionTo(member.roles.highest) <= 0) {
+    console.error(
+      `[gifblacklist] иерархия не пускает мут: моя «${me.roles.highest.name}»(${me.roles.highest.position}) ` +
+        `<= «${member.roles.highest.name}»(${member.roles.highest.position})`,
+    );
+    return;
+  }
+
+  try {
+    await member.timeout(GIF_STRIKE_TIMEOUT_MS, GIF_STRIKE_REASON);
+  } catch (error) {
+    console.error(
+      `[gifblacklist] мут не выдался: code=${error?.code} message=${error?.message} mfa=${guild.mfaLevel}`,
+    );
+    if (error?.code === 50013 && guild.mfaLevel === GuildMFALevel.Elevated) {
+      console.error('[gifblacklist] похоже на «Требовать 2FA для действий модерации» — включи 2FA владельцу бота');
+    }
+    return;
+  }
+
+  gifblacklist.resetStrikes(member.id); // после мута счёт начинается заново
+  console.log(
+    `[gifblacklist] ${member.user.tag} получил мут ${GIF_STRIKE_TIMEOUT_MS / 60_000} мин: ${GIF_STRIKE_REASON} (страйков: ${strike.count})`,
+  );
+
+  // Нарушителю — в ЛС (в канал не пишем: там и так удаляются его гифки).
+  try {
+    await member.send(
+      `Тебе выдан мут на ${formatDuration(GIF_STRIKE_TIMEOUT_MS)} по причине «${GIF_STRIKE_REASON}»: ` +
+        `${strike.count}-я заблокированная гифка в канале #${message.channel?.name ?? message.channelId}.`,
+    );
+  } catch {
+    /* ЛС закрыты — не страшно */
+  }
+
+  await sendLog(
+    {
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0xed4245)
+          .setTitle('Мут за спам гифками')
+          .addFields(
+            { name: 'Нарушитель', value: `${member} (${member.user.tag})`, inline: true },
+            { name: 'Срок', value: formatDuration(GIF_STRIKE_TIMEOUT_MS), inline: true },
+            { name: 'Причина', value: GIF_STRIKE_REASON, inline: false },
+            { name: 'Канал', value: `<#${message.channelId}>`, inline: true },
+            { name: 'Страйков', value: `${strike.count}/${GIF_STRIKE_LIMIT}`, inline: true },
+          )
+          .setTimestamp(),
+      ],
+    },
+    'лог мута за гифки',
+  );
 }
 
 async function logBlacklistHit(message, matches) {
@@ -1079,10 +1369,57 @@ client.on(Events.MessageUpdate, async (_oldMessage, newMessage) => {
 process.on('unhandledRejection', (error) => console.error('[unhandledRejection]', error));
 process.on('uncaughtException', (error) => console.error('[uncaughtException]', error));
 
-startKeepAlive(() => ({
-  bot: client.isReady() ? 'online' : 'starting',
-  user: client.isReady() ? client.user.tag : null,
-}));
+// ─────────────────────────────────────────────────────────────
+// АНТИ-СОН + СТОРОЖЕВОЙ ПЁС (Render free)
+//  1) HTTP-сервер держит порт открытым, /healthz отвечает по состоянию бота;
+//  2) внутренний автобот пингует свой URL каждые 4 минуты (URL Render отдаёт сам
+//     в RENDER_EXTERNAL_URL — настраивать ничего не нужно);
+//  3) внешний автобот из GitHub Actions дёргает /healthz каждые 5 минут
+//     (.github/workflows/keepalive.yml) — поднимает инстанс, даже если процесс умер;
+//  4) gateway молчит дольше 3 минут → перезапуск подключения, а если и это не
+//     помогает — exit(1), и Render поднимает контейнер заново. Больше не «молча».
+// ─────────────────────────────────────────────────────────────
+startKeepAlive(
+  () => ({
+    bot: client.isReady() ? 'online' : 'starting',
+    user: client.isReady() ? client.user.tag : null,
+    guilds: client.guilds?.cache?.size ?? 0,
+    wsPingMs: typeof client.ws?.ping === 'number' ? client.ws.ping : null,
+    gatewayUptimeSec: client.uptime ? Math.round(client.uptime / 1000) : null,
+    gifBlacklist: gifblacklist.listGifs().length,
+  }),
+  {
+    isHealthy: () => client.isReady(),
+
+    // Gateway не поднимается — перезапускаем подключение целиком.
+    onRecover: async ({ attempt }) => {
+      console.warn(`[watchdog] перезапускаю подключение к Discord (попытка ${attempt})`);
+      try {
+        client.destroy();
+      } catch (error) {
+        console.warn('[watchdog] destroy не прошёл:', error?.message);
+      }
+      await client.login(TOKEN);
+      console.log('[watchdog] подключение перезапущено');
+    },
+
+    // Инстанс всё-таки спал — пишем в лог, чтобы такое было видно.
+    onWake: ({ sleptMs }) => {
+      console.warn(`[watchdog] инстанс просыпался (сон ~${Math.round(sleptMs / 1000)} c) — самопинг не успел`);
+      sendLog(
+        { content: `😴 Инстанс Render спал ~${Math.round(sleptMs / 1000)} c и проснулся. Проверь самопинг и автобота.` },
+        'уведомление о сне',
+      );
+    },
+
+    // Совсем плохо: отдаём контейнер Render на перезапуск (он это умеет) — но сначала лог.
+    onFatal: async ({ reason, kind }) => {
+      console.error(`[watchdog] фатально (${kind}): ${reason} — выхожу, Render перезапустит контейнер`);
+      await sendLog({ content: `♻️ Перезапускаю себя (${kind}): ${reason}` }, 'уведомление о перезапуске');
+      process.exit(1);
+    },
+  },
+);
 
 client.login(TOKEN).catch((error) => {
   console.error('[login] не удалось войти:', error);

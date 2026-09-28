@@ -29,6 +29,8 @@ const STOPLOOPCLEAR_ALIASES = ['stoploopclear', 'стоплупклир'];
 const SPVKBAN_ALIASES = ['spvkban', 'спвкбан'];
 const SPVKUNBAN_ALIASES = ['spvkunban', 'спвкразбан'];
 const GIFBLACKLIST_ALIASES = ['gifblacklist', 'гифблеклист'];
+const NAME_TO_ID_ALIASES = ['nametouserid', 'никвиди'];
+const ROBLOX_INFO_ALIASES = ['getrobloxinfo', 'роблоксинфо'];
 
 // Контекстные команды (ПКМ по сообщению → Приложения): «сделать с этим сообщением».
 // Именно они закрывают сценарий «ответить командой на сообщение человека» —
@@ -44,6 +46,8 @@ const ALL_NAMES = [
   ...SPVKBAN_ALIASES,
   ...SPVKUNBAN_ALIASES,
   ...GIFBLACKLIST_ALIASES,
+  ...NAME_TO_ID_ALIASES,
+  ...ROBLOX_INFO_ALIASES,
 ];
 
 function mutedOnly(b) {
@@ -201,6 +205,24 @@ function buildGifBlacklistCommand(name) {
     .addSubcommand((sub) => sub.setName('list').setDescription('Показать чёрный список и вайтлист'));
 }
 
+function buildNameToIdCommand(name) {
+  return mutedOnly(
+    new SlashCommandBuilder()
+      .setName(name)
+      .setDescription('Roblox-ник → Roblox ID (ответ видишь только ты)'),
+  ).addStringOption((o) => o.setName('ник').setDescription('Ник игрока в Roblox').setRequired(true));
+}
+
+function buildRobloxInfoCommand(name) {
+  return mutedOnly(
+    new SlashCommandBuilder()
+      .setName(name)
+      .setDescription('Всё про игрока Roblox: аватарка, возраст аккаунта, подписки, подписчики, друзья'),
+  ).addStringOption((o) =>
+    o.setName('игрок').setDescription('Ник, Roblox ID или ссылка на профиль').setRequired(true),
+  );
+}
+
 const contextCommandData = [
   new ContextMenuCommandBuilder()
     .setName(GIF_CONTEXT_ADD)
@@ -222,6 +244,8 @@ const commandData = [
   ...SPVKBAN_ALIASES.map(buildSpvkBanCommand),
   ...SPVKUNBAN_ALIASES.map(buildSpvkUnbanCommand),
   ...GIFBLACKLIST_ALIASES.map(buildGifBlacklistCommand),
+  ...NAME_TO_ID_ALIASES.map(buildNameToIdCommand),
+  ...ROBLOX_INFO_ALIASES.map(buildRobloxInfoCommand),
 ].map((c) => c.toJSON());
 
 // ВАЖНО: Discord регистрирует команды пакетным перезаписыванием (bulk overwrite),
@@ -237,6 +261,8 @@ module.exports = {
   SPVKBAN_ALIASES,
   SPVKUNBAN_ALIASES,
   GIFBLACKLIST_ALIASES,
+  NAME_TO_ID_ALIASES,
+  ROBLOX_INFO_ALIASES,
   GIF_CONTEXT_ADD,
   GIF_CONTEXT_REMOVE,
   ALL_NAMES,

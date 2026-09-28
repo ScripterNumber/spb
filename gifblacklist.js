@@ -59,6 +59,7 @@ function normalizeState(parsed) {
   const gifs = Array.isArray(source.gifs) ? source.gifs.filter((e) => e && typeof e.url === 'string') : [];
   const users = Array.isArray(source.whitelist?.users) ? source.whitelist.users.filter((u) => u && u.id) : [];
   const roles = Array.isArray(source.whitelist?.roles) ? source.whitelist.roles.filter((r) => r && r.id) : [];
+  const strikes = source.strikes && typeof source.strikes === 'object' ? source.strikes : {};
 
   return {
     gifs: gifs.map((entry, index) => ({
@@ -77,6 +78,19 @@ function normalizeState(parsed) {
       users: users.map((u) => ({ id: String(u.id), tag: u.tag ?? null, addedAt: u.addedAt ?? null })),
       roles: roles.map((r) => ({ id: String(r.id), name: r.name ?? null, addedAt: r.addedAt ?? null })),
     },
+    // Счётчик нарушений: userId -> { count, firstAt, lastAt }
+    strikes: Object.fromEntries(
+      Object.entries(strikes)
+        .filter(([userId, value]) => /^\d+$/.test(userId) && value && typeof value === 'object')
+        .map(([userId, value]) => [
+          userId,
+          {
+            count: Number.isFinite(value.count) ? value.count : 0,
+            firstAt: value.firstAt ?? null,
+            lastAt: value.lastAt ?? null,
+          },
+        ]),
+    ),
   };
 }
 
@@ -398,6 +412,55 @@ function isUserIdWhitelisted(userId) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// СТРАЙКИ: сколько раз человек прислал заблокированную гифку
+// ─────────────────────────────────────────────────────────────
+const STRIKE_KEEP_MS = 30 * 24 * 60 * 60 * 1000; // старше 30 дней — мусор, чистим
+
+function addStrike(userId, windowMs) {
+  const id = String(userId);
+  const store = load();
+  const now = Date.now();
+
+  const current = store.strikes[id] ?? null;
+  const firstAt = Date.parse(current?.firstAt ?? '');
+  const expired = !Number.isFinite(firstAt) || now - firstAt > windowMs;
+
+  const strike = expired
+    ? { count: 1, firstAt: new Date(now).toISOString(), lastAt: new Date(now).toISOString() }
+    : {
+        count: (Number(current?.count) || 0) + 1,
+        firstAt: current.firstAt,
+        lastAt: new Date(now).toISOString(),
+      };
+
+  store.strikes[id] = strike;
+
+  // Заодно подчищаем древние записи, чтобы json не пух.
+  for (const [key, value] of Object.entries(store.strikes)) {
+    const stamp = Date.parse(value?.lastAt ?? value?.firstAt ?? '');
+    if (Number.isFinite(stamp) && now - stamp > STRIKE_KEEP_MS) delete store.strikes[key];
+  }
+
+  save();
+  return { count: strike.count, firstAt: strike.firstAt };
+}
+
+function resetStrikes(userId) {
+  const store = load();
+  const id = String(userId);
+  if (!store.strikes[id]) return false;
+  delete store.strikes[id];
+  save();
+  return true;
+}
+
+function listStrikes() {
+  return Object.entries(load().strikes)
+    .map(([userId, value]) => ({ userId, count: value.count ?? 0, lastAt: value.lastAt ?? null }))
+    .sort((a, b) => b.count - a.count);
+}
+
+// ─────────────────────────────────────────────────────────────
 // ПОИСК СОВПАДЕНИЙ В СООБЩЕНИИ
 // ─────────────────────────────────────────────────────────────
 async function findMatches(message) {
@@ -502,4 +565,7 @@ module.exports = {
   isUserIdWhitelisted,
   isWhitelisted,
   findMatches,
+  addStrike,
+  resetStrikes,
+  listStrikes,
 };
