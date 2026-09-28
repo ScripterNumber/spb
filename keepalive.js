@@ -33,10 +33,28 @@ const KEEPALIVE_DEFAULTS = {
   maxRecoveriesPerWindow: 3,
 };
 
+// Где взять свой URL для самопинга (по порядку):
+//   1) hooks.selfUrl — если задали программно;
+//   2) PING_URL — переменная окружения (ручной override, например свой домен);
+//   3) RENDER_EXTERNAL_URL — Render отдаёт её сам для web-сервисов;
+//   4) RENDER_EXTERNAL_HOSTNAME — на случай, если полной URL в окружении нет.
+// Итог: обычно НИЧЕГО вписывать не нужно — всё приходит из окружения Render.
+function resolveSelfUrl(explicit) {
+  const hostname = process.env.RENDER_EXTERNAL_HOSTNAME;
+  const candidates = [
+    explicit,
+    process.env.PING_URL,
+    process.env.RENDER_EXTERNAL_URL,
+    hostname ? `https://${hostname}` : '',
+  ];
+  const found = candidates.find((value) => typeof value === 'string' && value.trim());
+  return (found ?? '').trim();
+}
+
 function startKeepAlive(getStatus, hooks = {}) {
   const cfg = { ...KEEPALIVE_DEFAULTS, ...(hooks.config ?? {}) };
   const port = process.env.PORT || 10000;
-  const selfUrl = String(hooks.selfUrl ?? process.env.PING_URL ?? process.env.RENDER_EXTERNAL_URL ?? '').trim();
+  const selfUrl = resolveSelfUrl(hooks.selfUrl);
   const healthy = () => (hooks.isHealthy ? hooks.isHealthy() === true : true);
 
   const stats = {

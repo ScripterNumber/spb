@@ -112,15 +112,28 @@ https://discord.com/oauth2/authorize?client_id=ТВОЙ_CLIENT_ID&scope=bot+appl
 | 2. **Внутренний автобот** | каждые 4 минуты пингует свой `/healthz` — трафик есть, сон не начинается | `keepalive.js` |
 | 3. **Внешний автобот** | GitHub Actions дёргает `/healthz` каждые 5 минут — поднимает инстанс, даже если процесс умер | `.github/workflows/keepalive.yml` |
 
-Свой URL для внутреннего автобота искать не нужно: Render сам подставляет
-`RENDER_EXTERNAL_URL` (можно переопределить переменной `PING_URL`).
+**Куда класть ссылку на сервис:**
+
+| Кому нужна ссылка | Куда положить | Обязательно? |
+|---|---|---|
+| Внутренний автобот (слой 2, в боте) | никуда — Render сам подставляет `RENDER_EXTERNAL_URL` (или `RENDER_EXTERNAL_HOSTNAME`); можно переопределить переменной `PING_URL` | нет |
+| Внешний автобот (слой 3, GitHub Actions) | repo Variable `RENDER_URL` **или** строка `DEFAULT_URL` прямо в `.github/workflows/keepalive.yml` | да, один из двух |
 
 **Внешний автобот — включить один раз (полминуты):**
 
 1. Залей репозиторий на GitHub — папка `.github/workflows` должна попасть в репозиторий.
 2. GitHub → репозиторий → **Settings → Secrets and variables → Actions → Variables**.
-3. **New repository variable**: Name = `RENDER_URL`, Value = `https://имя-сервиса.onrender.com`.
+3. **New repository variable**: Name = `RENDER_URL`, Value = `https://имя-сервиса.onrender.com`
+   (без `/healthz` и без слэша на конце — бот добавит сам).
+   Не хочешь заводить переменную — открой `.github/workflows/keepalive.yml` и впиши ссылку
+   в `DEFAULT_URL=""` в шаге ping.
 4. Вкладка **Actions** → workflow **keepalive** → **Run workflow** — проверить руками.
+
+Где взять саму ссылку в Render: страница сервиса сверху — `https://имя-сервиса.onrender.com`
+(она же в **Settings → Custom Domains / URL**). Убедиться, что самопинг включился, можно по
+строке в логах Render: `[keep-alive] HTTP-сервер слушает порт 10000 · самопинг: https://…/healthz`
+— если там «самопинг выключен», значит сервис запущен не как web-сервис (тогда спасает только
+внешний автобот из GitHub).
 
 GitHub под нагрузкой может задержать пинг на пару минут, поэтому слой 2 (внутри бота) и нужен.
 
